@@ -485,7 +485,7 @@ new file mode 100644
 index 0000000..fe27740
 --- /dev/null
 +++ b/src/fast/backends/gfx_opengl_ps4.cpp
-@@ -0,0 +1,1178 @@
+@@ -0,0 +1,1208 @@
 +#include "ship/window/Window.h"
 +// OpenGL ES 2.0 renderer for PS4 (Piglet). Derived from gfx_opengl.cpp, with everything that needs
 +// desktop GL / GLES3 (MSAA, glBlitFramebuffer, VAOs, depth read back, sized formats) replaced.
@@ -1055,6 +1055,10 @@ index 0000000..fe27740
 +    return it == mShaderProgramPool.end() ? nullptr : &it->second;
 +}
 +
++void GfxRenderingAPIOGL::ClearShaderCache() {
++    mShaderProgramPool.clear();
++}
++
 +void GfxRenderingAPIOGL::ShaderGetInfo(struct ShaderProgram* prg, uint8_t* numInputs, bool usedTextures[2]) {
 +    *numInputs = prg->numInputs;
 +    usedTextures[0] = prg->usedTextures[0];
@@ -1126,6 +1130,13 @@ index 0000000..fe27740
 +void GfxRenderingAPIOGL::SetDepthTestAndMask(bool depth_test, bool z_upd) {
 +    mCurrentDepthTest = depth_test;
 +    mCurrentDepthMask = z_upd;
++}
++
++void GfxRenderingAPIOGL::SetCurrentPrimDepth(float depth) {
++    if (depth != mCurrentPrimDepth) {
++        mCurrentPrimDepth = depth;
++        mPrimDepthDirty = true;
++    }
 +}
 +
 +void GfxRenderingAPIOGL::SetZmodeDecal(bool zmode_decal) {
@@ -1408,6 +1419,25 @@ index 0000000..fe27740
 +    if (mLastScissorEnabled != 1) {
 +        mLastScissorEnabled = 1;
 +        glEnable(GL_SCISSOR_TEST);
++    }
++}
++
++void GfxRenderingAPIOGL::ClearDepthRegion(int x, int y, int w, int h) {
++    // Save current scissor state so callers don't need to manually invalidate.
++    GLint prevScissor[4];
++    GLboolean scissorWasEnabled = glIsEnabled(GL_SCISSOR_TEST);
++    glGetIntegerv(GL_SCISSOR_BOX, prevScissor);
++
++    glEnable(GL_SCISSOR_TEST);
++    glScissor(x, y, w, h);
++    glDepthMask(GL_TRUE);
++    glClear(GL_DEPTH_BUFFER_BIT);
++    glDepthMask(mCurrentDepthMask ? GL_TRUE : GL_FALSE);
++
++    // Restore previous scissor state.
++    glScissor(prevScissor[0], prevScissor[1], prevScissor[2], prevScissor[3]);
++    if (!scissorWasEnabled) {
++        glDisable(GL_SCISSOR_TEST);
 +    }
 +}
 +
