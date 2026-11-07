@@ -1,0 +1,191 @@
+# Build Ship of Harkinian 9.3.0 ("Dewey Alpha") for PS4 (jailbroken, GoldHEN).
+#
+# What this does:
+#   1. Checks out this repo as <workspace>/ps4port.
+#   2. Downloads the portable build tools (LLVM 18.1.8, CMake 3.28.3, Ninja
+#      1.12.1, OpenOrbis toolchain v0.5.4) into <workspace>/tools.
+#   3. Clones Shipwright tag 9.3.0 + submodules and applies the three PS4
+#      patches (scripts/prepare-sources.sh).
+#   4. Downloads soh.o2r from the official 9.3.0 PC release
+#      (scripts/fetch-soh-o2r.sh). No ROM, no oot.o2r, no Sony binaries.
+#   5. Cross-builds the dependencies (build-deps.sh), configures and builds
+#      soh.elf, and packages it into a .pkg (package.sh).
+#   6. Uploads the .pkg, soh.elf and the build logs as artifacts.
+#
+# Networking (Anchor/CrowdControl/Sail) is DISABLED in this build on purpose:
+# Ship of Harkinian 9.3.0 needs SDL_net, which is not cross-built for PS4.
+# Instead, patches/shipwright-9.3.0-ps4-network-stub.patch stubs Network out
+# (Enable() is a no-op that logs a warning). See BUILD.md, section "Anchor /
+# SDL_net: decision". Phase 2 is to try SDL_net 2.2.0 for PS4.
+#
+# Trigger: manual only (workflow_dispatch). A full run takes roughly
+# 30-60 minutes on windows-latest, most of it in build-deps.sh and the game
+# build. Reruns reuse the tools/ and deps/ caches.
+name: Build Ship of Harkinian PS4 (9.3.0)
+
+"on":
+  workflow_dispatch:
+
+# Never run two builds at once: the tools/deps caches are shared.
+concurrency:
+  group: soh-ps4-9.3.0
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  SOH_TAG: "9.3.0"
+  LLVM_VERSION: "18.1.8"
+  CMAKE_VERSION: "3.28.3"
+  NINJA_VERSION: "1.12.1"
+  OPENORBIS_VERSION: "0.5.4"
+
+jobs:
+  build-ps4:
+    name: Build .pkg for PS4
+    runs-on: windows-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout this repo as ps4port
+        uses: actions/checkout@v4
+        with:
+          path: ps4port
+
+      - name: Record build info
+        run: |
+          {
+            echo "Ship of Harkinian PS4 build — 9.3.0 (Dewey Alpha)"
+            echo "Date (UTC): $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "Runner: $RUNNER_OS / $RUNNER_ARCH"
+            echo "ps4port commit: $GITHUB_SHA"
+            echo "Shipwright tag: $SOH_TAG"
+            echo "libultraship pin: 62e973aeb4a53ad4d22bb91e2d9373ecdfcd246c"
+            echo "OpenOrbis toolchain: v$OPENORBIS_VERSION"
+            echo "LLVM: $LLVM_VERSION / CMake: $CMAKE_VERSION / Ninja: $NINJA_VERSION"
+            echo "Network (Anchor/CrowdControl/Sail): DISABLED on PS4 (SDL_net stub, v1)"
+          } > ps4port/build-info.txt
+          cat ps4port/build-info.txt
+
+      - name: Cache portable tools
+        id: cache-tools
+        uses: actions/cache@v4
+        with:
+          path: tools
+          key: soh-ps4-tools-llvm${{ env.LLVM_VERSION }}-cmake${{ env.CMAKE_VERSION }}-ninja${{ env.NINJA_VERSION }}-oo${{ env.OPENORBIS_VERSION }}-v1
+
+      - name: Download portable tools (LLVM / CMake / Ninja / OpenOrbis)
+        if: steps.cache-tools.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p tools dl
+          cd dl
+          # LLVM 18.1.8 (self-extracting exe; unpack with 7-Zip, do not install)
+          if [ ! -f "LLVM-$LLVM_VERSION-win64.exe" ]; then
+            curl -fL -o "LLVM-$LLVM_VERSION-win64.exe" \
+              "https://github.com/llvm/llvm-project/releases/download/llvmorg-$LLVM_VERSION/LLVM-$LLVM_VERSION-win64.exe"
+          fi
+          7z x -y -o../tools/llvm "LLVM-$LLVM_VERSION-win64.exe" > llvm-extract.log 2>&1
+          # CMake 3.28.3
+          if [ ! -f "cmake-$CMAKE_VERSION-windows-x86_64.zip" ]; then
+            curl -fL -o "cmake-$CMAKE_VERSION-windows-x86_64.zip" \
+              "https://github.com/Kitware/CMake/releases/download/v$CMAKE_VERSION/cmake-$CMAKE_VERSION-windows-x86_64.zip"
+          fi
+          7z x -y -o../tools "cmake-$CMAKE_VERSION-windows-x86_64.zip" > cmake-extract.log 2>&1
+          # Ninja 1.12.1
+          if [ ! -f "ninja-win.zip" ]; then
+            curl -fL -o ninja-win.zip \
+              "https://github.com/ninja-build/ninja/releases/download/v$NINJA_VERSION/ninja-win.zip"
+          fi
+          mkdir -p ../tools/ninja
+          7z x -y -o../tools/ninja ninja-win.zip > ninja-extract.log 2>&1
+          # OpenOrbis toolchain v0.5.4
+          if [ ! -f "toolchain-llvm-18.tar.gz" ]; then
+            curl -fL -o toolchain-llvm-18.tar.gz \
+              "https://github.com/OpenOrbis/OpenOrbis-PS4-Toolchain/releases/download/v$OPENORBIS_VERSION/toolchain-llvm-18.tar.gz"
+          fi
+          mkdir -p ../tools/OpenOrbis
+          tar -xzf toolchain-llvm-18.tar.gz -C ../tools/OpenOrbis
+          cd ..
+          echo "== tools layout:"
+          find tools -maxdepth 3 | head -40
+          ./tools/llvm/bin/clang.exe --version | head -2
+          ./tools/cmake-*/bin/cmake.exe --version | head -1
+          ./tools/ninja/ninja.exe --version
+          ls tools/OpenOrbis/OpenOrbis/PS4Toolchain/bin/windows | head -20
+
+      - name: Set up .NET (PkgTool.Core)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Prepare sources (Shipwright 9.3.0 + PS4 patches)
+        run: |
+          cd ps4port
+          bash scripts/prepare-sources.sh
+
+      - name: Fetch soh.o2r from the official 9.3.0 PC release
+        run: |
+          cd ps4port
+          bash scripts/fetch-soh-o2r.sh
+
+      - name: Cache cross-built dependencies
+        id: cache-deps
+        uses: actions/cache@v4
+        with:
+          path: |
+            ps4port/prefix
+            ps4port/deps
+          key: soh-ps4-deps-oo${{ env.OPENORBIS_VERSION }}-${{ hashFiles('ps4port/build-deps.sh', 'ps4port/cmake/ps4-toolchain.cmake') }}-v1
+
+      - name: Cross-build dependencies
+        run: |
+          cd ps4port
+          bash build-deps.sh
+          echo "== prefix contents:"
+          ls prefix/lib | head -30
+
+      - name: Configure (CMake, PS4 toolchain)
+        run: |
+          cd ps4port
+          bash configure.sh
+          echo "== configure OK"
+
+      - name: Build soh.elf
+        run: |
+          cd ps4port
+          source env.sh
+          cmake --build build --target soh --parallel 4
+          ls -lh build/soh/soh.elf
+
+      - name: Package (.pkg)
+        run: |
+          cd ps4port
+          bash package.sh
+          ls -lh out/
+
+      - name: Upload artifacts (.pkg + .elf + build info)
+        uses: actions/upload-artifact@v4
+        with:
+          name: soh-ps4-9.3.0
+          path: |
+            ps4port/out/*.pkg
+            ps4port/build/soh/soh.elf
+            ps4port/build-info.txt
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: soh-ps4-9.3.0-logs
+          path: |
+            ps4port/deps/build/*/*.log
+            ps4port/build/CMakeFiles/CMakeOutput.log
+            ps4port/build/CMakeFiles/CMakeError.log
+            ps4port/build/CMakeCache.txt
+          retention-days: 14
+          if-no-files-found: ignore

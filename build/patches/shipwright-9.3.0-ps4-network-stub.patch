@@ -1,0 +1,117 @@
+diff --git a/soh/soh/Network/Network.cpp b/soh/soh/Network/Network.cpp
+index 57c16644..ea87e878 100644
+--- a/soh/soh/Network/Network.cpp
++++ b/soh/soh/Network/Network.cpp
+@@ -8,6 +8,12 @@ void Network::Enable(const char* host, uint16_t port) {
+         return;
+     }
+ 
++#ifdef __PS4__
++    // PS4 9.3.0: networking is stubbed out (no SDL_net on PS4).
++    // Anchor/CrowdControl/Sail stay disabled on console; do not start a thread.
++    SPDLOG_WARN("[Network] Networking is not available on PS4.");
++    return;
++#else
+     if (SDLNet_ResolveHost(&networkAddress, host, port) == -1) {
+         SPDLOG_ERROR("[Network] SDLNet_ResolveHost: {}", SDLNet_GetError());
+     }
+@@ -20,6 +26,7 @@ void Network::Enable(const char* host, uint16_t port) {
+     }
+ 
+     receiveThread = std::thread(&Network::ReceiveFromServer, this);
++#endif
+ }
+ 
+ void Network::Disable() {
+@@ -28,7 +35,14 @@ void Network::Disable() {
+     }
+ 
+     isEnabled = false;
++#ifdef __PS4__
++    // PS4 9.3.0: Enable() never starts the receive thread on PS4.
++    if (receiveThread.joinable()) {
++        receiveThread.join();
++    }
++#else
+     receiveThread.join();
++#endif
+ }
+ 
+ void Network::OnIncomingData(char payload[512]) {
+@@ -48,7 +62,9 @@ void Network::ProcessOutgoingPackets() {
+ 
+ void Network::SendDataToRemote(const char* payload) {
+     SPDLOG_DEBUG("[Network] Sending data: {}", payload);
++#ifndef __PS4__
+     SDLNet_TCP_Send(networkSocket, payload, static_cast<int>(strlen(payload) + 1));
++#endif
+ }
+ 
+ void Network::SendJsonToRemote(nlohmann::json payload) {
+@@ -58,6 +74,10 @@ void Network::SendJsonToRemote(nlohmann::json payload) {
+ // MARK: - Private
+ 
+ void Network::ReceiveFromServer() {
++#ifdef __PS4__
++    // PS4 9.3.0: networking stubbed out; this thread is never started.
++    return;
++#else
+     while (isEnabled) {
+         while (!isConnected && isEnabled) {
+             SPDLOG_TRACE("[Network] Attempting to make connection to server...");
+@@ -134,6 +154,7 @@ void Network::ReceiveFromServer() {
+             SPDLOG_INFO("[Network] Ending receiving thread...");
+         }
+     }
++#endif
+ }
+ 
+ void Network::HandleRemoteData(char payload[512]) {
+diff --git a/soh/soh/Network/Network.h b/soh/soh/Network/Network.h
+index e49b909e..8ecd99f3 100644
+--- a/soh/soh/Network/Network.h
++++ b/soh/soh/Network/Network.h
+@@ -3,7 +3,18 @@
+ #ifdef __cplusplus
+ 
+ #include <thread>
++#ifdef __PS4__
++// PS4 9.3.0: no SDL_net on PS4 (Anchor/CrowdControl/Sail disabled on console).
++// Minimal stand-ins so Network.h compiles without SDL_net headers.
++#include <cstdint>
++struct IPaddress {
++    uint32_t host;
++    uint16_t port;
++};
++typedef void* TCPsocket;
++#else
+ #include <SDL2/SDL_net.h>
++#endif
+ #include <nlohmann/json.hpp>
+ 
+ class Network {
+diff --git a/soh/soh/OTRGlobals.cpp b/soh/soh/OTRGlobals.cpp
+index 6041c70c..1dbb06f5 100644
+--- a/soh/soh/OTRGlobals.cpp
++++ b/soh/soh/OTRGlobals.cpp
+@@ -1670,7 +1670,10 @@ extern "C" void InitOTR(int argc, char* argv[]) {
+     }
+ 
+     srand(static_cast<unsigned int>(now));
++#ifndef __PS4__
++    // PS4 9.3.0: no SDL_net on PS4 (networking stubbed out, see Network.cpp).
+     SDLNet_Init();
++#endif
+     if (CVarGetInteger(CVAR_REMOTE_CROWD_CONTROL("Enabled"), 0)) {
+         CrowdControl::Instance->Enable();
+     }
+@@ -1704,7 +1707,9 @@ extern "C" void DeinitOTR() {
+     if (CVarGetInteger(CVAR_REMOTE_ANCHOR("Enabled"), 0)) {
+         Anchor::Instance->Disable();
+     }
++#ifndef __PS4__
+     SDLNet_Quit();
++#endif
+ 
+     // Destroying gui here because we have shared ptrs to LUS objects which output to SPDLOG which is destroyed before
+     // these shared ptrs.
