@@ -4,7 +4,7 @@
 #   1. Checks out this repo as <workspace>/ps4port.
 #   2. Downloads the portable build tools (LLVM 18.1.8, CMake 3.28.3, Ninja
 #      1.12.1, OpenOrbis toolchain v0.5.4) into <workspace>/tools.
-#   3. Clones Shipwright tag 9.3.0 + submodules and applies the three PS4
+#   3. Clones Shipwright tag 9.3.0 + submodules and applies the four PS4
 #      patches (scripts/prepare-sources.sh).
 #   4. Downloads soh.o2r from the official 9.3.0 PC release
 #      (scripts/fetch-soh-o2r.sh). No ROM, no oot.o2r, no Sony binaries.

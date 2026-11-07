@@ -5,11 +5,15 @@
 #   1. Clones HarbourMasters/Shipwright at tag 9.3.0 (with submodules:
 #      libultraship at the 9.3.0 pin 62e973a, torch at the 9.3.0 pin)
 #      into <workspace>/Shipwright (sibling of ps4port).
-#   2. Applies, in order, the three patches from patches/:
+#   2. Applies, in order, the four patches from patches/:
 #        a. patches/shipwright-9.3.0-ps4.patch        (PS4 port, rebased to 9.3.0)
 #        b. patches/libultraship-9.3.0-ps4.patch     (inside Shipwright/libultraship)
 #        c. patches/shipwright-9.3.0-ps4-network-stub.patch
 #           (stubs out SDL_net on PS4: Anchor/CrowdControl/Sail disabled)
+#        d. patches/torch-9.3.0-ps4.patch            (inside Shipwright/torch:
+#           on PS4 Torch must use the prefix zlib instead of FetchContent zlib,
+#           whose shared+static targets both output libz.a on PS4 and make
+#           Ninja fail with "multiple rules generate _deps/zlib-build/libz.a")
 #   3. Verifies every patch with `git apply --check` before applying, and
 #      prints a diff summary at the end.
 #
@@ -69,6 +73,10 @@ apply_patch "$WORKSPACE/Shipwright/libultraship" \
 apply_patch "$WORKSPACE/Shipwright" \
     "$HERE/patches/shipwright-9.3.0-ps4-network-stub.patch" \
     "shipwright-9.3.0-ps4-network-stub.patch (SDL_net stub)"
+
+apply_patch "$WORKSPACE/Shipwright/torch" \
+    "$HERE/patches/torch-9.3.0-ps4.patch" \
+    "torch-9.3.0-ps4.patch (prefix zlib on PS4, fixes Ninja duplicate libz.a)"
 
 echo "== summary of PS4 changes vs upstream 9.3.0"
 git -C "$WORKSPACE/Shipwright" diff --stat | tail -25

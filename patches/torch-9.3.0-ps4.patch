@@ -1,0 +1,19 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 8c8f227..9cec2c8 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -409,7 +409,13 @@ FetchContent_Declare(
+ FetchContent_MakeAvailable(tinyxml2)
+ 
+ # Link zlib
+-if(EMSCRIPTEN OR ANDROID)
++# PS4: Torch's FetchContent zlib builds BOTH a shared 'zlib' target and a
++# static 'zlibstatic' target, both with OUTPUT_NAME "z". On PS4 there is no
++# shared-library suffix, so Ninja reports "multiple rules generate
++# _deps/zlib-build/libz.a". Use the zlib already cross-built into the
++# prefix (found by Shipwright's top-level find_package(ZLIB REQUIRED))
++# instead, exactly like the Emscripten/Android branch already does.
++if(EMSCRIPTEN OR ANDROID OR CMAKE_SYSTEM_NAME STREQUAL "PS4")
+     find_package(ZLIB REQUIRED)
+     set(TORCH_ZLIB_TARGET ZLIB::ZLIB)
+ else()

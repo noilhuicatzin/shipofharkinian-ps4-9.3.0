@@ -27,7 +27,8 @@ toolchain, tiene ~600 MiB de RAM libre y el build completo necesita varios GB.
 | `patches/shipwright-9.3.0-ps4.patch` | Parche PS4 para Shipwright 9.3.0 (875 líneas, 15 archivos). Rebase de `shipwright-9.2.3-ps4.patch`, 17/17 conflictos resueltos. |
 | `patches/libultraship-9.3.0-ps4.patch` | Parche PS4 para libultraship en el pin de 9.3.0 (`62e973a`, 2 899 líneas, 17 archivos). |
 | `patches/shipwright-9.3.0-ps4-network-stub.patch` | Parche nuevo: desactiva la red en PS4 (ver §3). 37 líneas, 3 archivos. |
-| `scripts/prepare-sources.sh` | Clona Shipwright tag 9.3.0 + submódulos y aplica los 3 parches (con `git apply --check` antes de cada uno). Idempotente. |
+| `patches/torch-9.3.0-ps4.patch` | Parche nuevo: en PS4 Torch usa el zlib del prefix en vez de su FetchContent zlib (ver §3.1). Sin él, Ninja falla con `multiple rules generate _deps/zlib-build/libz.a` (run #1, 2026-11-07). |
+| `scripts/prepare-sources.sh` | Clona Shipwright tag 9.3.0 + submódulos y aplica los 4 parches (con `git apply --check` antes de cada uno). Idempotente. |
 | `scripts/fetch-soh-o2r.sh` | Descarga `SoH-Dewey-Alpha-Win64.zip` de la release oficial 9.3.0 y extrae `soh.o2r` a `release-pc/`. |
 | `build-deps.sh`, `configure.sh`, `env.sh`, `package.sh` | Scripts del autor, con 2 cambios (ver §5). |
 | `cmake/`, `compat/`, `bzip2-cmake/`, `opusfile-cmake/`, `zlib-cmake/`, `pkg-static/`, `tests/` | Toolchain CMake PS4, compatibilidad OpenOrbis, helpers de deps, icono del paquete y tests del autor, sin cambios. |
