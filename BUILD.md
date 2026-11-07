@@ -93,6 +93,27 @@ quitar el parche stub, y volver a enlazar `SDL2_net` en la rama PS4 de
 `soh/CMakeLists.txt`. Si SDL_net no compila o no conecta en la PS4 real, se
 revierte al stub: el resto del port no depende de ello.
 
+## 3.1. Fix post-run #2 (2026-11-07): clang-scan-deps no veía los flags de PS4
+
+El run #1 se arregló con el parche de Torch, pero el run #2 falló en
+`Build soh.elf` en yaml-cpp con `'string' / 'cstdlib' / 'algorithm' file
+not found` al escanear dependencias. La causa, visible en el log completo
+del run: el comando de `clang-scan-deps` no llevaba **ninguno** de los flags
+obligatorios de PS4 (ni `-isysroot`, ni `-nostdinc++`, ni el `-isystem` de
+libc++ en `include/c++/v1`, que sí existe en OpenOrbis 0.5.4). Esos flags
+solo vivían en la regla de compilación personalizada de
+`cmake/Platform/PS4.cmake`, y `clang-scan-deps` arma su comando desde
+`<FLAGS>`, no desde esa regla.
+
+Fix en dos partes, ambas en este repo:
+- `configure.sh` pasa `-DCMAKE_CXX_SCAN_FOR_MODULES=OFF`: SoH no usa módulos
+  de C++20, así que no se pierde nada y Ninja vuelve a los depfiles normales,
+  generados por el comando de compilación completo.
+- `cmake/ps4-toolchain.cmake` además espeja los flags obligatorios en
+  `CMAKE_C_FLAGS_INIT` / `CMAKE_CXX_FLAGS_INIT`, por si alguna otra
+  herramienta arma su comando desde `<FLAGS>`. Duplicarlos en la regla de
+  compilación no hace daño (`ps4_fixups.h` tiene guarda de inclusión).
+
 ## 4. Pasos exactos para lanzar el build
 
 ### 4.1 Subir este repo a GitHub

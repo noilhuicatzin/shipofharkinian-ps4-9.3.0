@@ -9,4 +9,5 @@ cmake -G Ninja -S "$(W "$HERE/../Shipwright")" -B "$(W "$HERE/build")" \
     -DCMAKE_BUILD_TYPE=Release \
     -DOPUSFILE_INCLUDE_DIR="$(W "$HERE/prefix/include/opus")" \
     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+    -DCMAKE_CXX_SCAN_FOR_MODULES=OFF \
     "$@"
