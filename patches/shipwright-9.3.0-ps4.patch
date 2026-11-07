@@ -264,6 +264,32 @@ index 99208973..bb8b71ad 100644
  }
  
  class ExtendedVanillaTableInvalidItemIdException : public std::exception {
+diff --git a/soh/soh/GbiWrap.cpp b/soh/soh/GbiWrap.cpp
+index 191ed260..24f90f87 100644
+--- a/soh/soh/GbiWrap.cpp
++++ b/soh/soh/GbiWrap.cpp
+@@ -2,6 +2,21 @@
+ 
+ #include <bit>
+ 
++#ifdef __PS4__
++// OpenOrbis ships libc++ 11, which has no std::bit_cast (it arrived in libc++
++// 14). GbiWrap.cpp is the only file in the tree that uses it, so provide it
++// here, for this translation unit only, instead of patching every call site.
++#include <cstring>
++namespace std {
++template <class To, class From> To bit_cast(const From& from) noexcept {
++    static_assert(sizeof(To) == sizeof(From), "bit_cast requires equal sizes");
++    To to;
++    __builtin_memcpy(&to, &from, sizeof(To));
++    return to;
++}
++} // namespace std
++#endif
++
+ // OTRTODO - this is awful
+ 
+ extern "C" {
 diff --git a/soh/soh/OTRGlobals.cpp b/soh/soh/OTRGlobals.cpp
 index 1b4f62c4..6041c70c 100644
 --- a/soh/soh/OTRGlobals.cpp
