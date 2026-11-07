@@ -1959,22 +1959,23 @@ index 361a1f7..ff6a517 100644
  #if defined(__ANDROID__)
      const char* externaldir = SDL_AndroidGetExternalStoragePath();
      if (externaldir != NULL) {
-@@ -537,6 +549,14 @@ std::string Context::GetAppBundlePath() {
+@@ -537,6 +549,15 @@ std::string Context::GetAppBundlePath() {
  }
  
  std::string Context::GetAppDirectoryPath(const std::string& appName) {
 +#ifdef __PS4__
-+    // PS4 9.3.0: writable and reachable over FTP/USB: /data/<short name>
-+    if (appName.empty() && GetRawInstance() != nullptr) {
-+        appName = GetRawInstance()->mShortName;
-+    }
-+    return "/data/" + (appName.empty() ? std::string("ship") : appName);
++    // PS4 9.3.0: writable and reachable over FTP/USB: /data/<short name>.
++    // NOTE: appName is a const ref in 9.3.0 (it was by value in 9.2.3), so it
++    // cannot be assigned to; use a local like upstream's effectiveAppName.
++    const std::string& effectiveAppName =
++        appName.empty() && GetRawInstance() != nullptr ? GetRawInstance()->mShortName : appName;
++    return "/data/" + (effectiveAppName.empty() ? std::string("ship") : effectiveAppName);
 +#endif
 +
  #if defined(__ANDROID__)
      const char* externaldir = SDL_AndroidGetExternalStoragePath();
      if (externaldir != NULL) {
-@@ -605,8 +625,14 @@ std::string Context::LocateFileAcrossAppDirs(const std::string& path, const std:
+@@ -605,8 +626,14 @@ std::string Context::LocateFileAcrossAppDirs(const std::string& path, const std:
      if (std::filesystem::exists(fpath)) {
          return fpath;
      }
