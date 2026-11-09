@@ -1,0 +1,59 @@
+diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl_ps4.cpp
+--- a/src/fast/backends/gfx_opengl_ps4.cpp
++++ b/src/fast/backends/gfx_opengl_ps4.cpp
+@@ -353,6 +353,8 @@
+     const GLint length = (GLint)source.size();
+     GLint success = GL_FALSE;
+ 
++    SPDLOG_INFO("[PS4] [diag] compiling {} shader ({} bytes)...", what, (int)source.size());
++    spdlog::default_logger()->flush();
+     GLuint shader = glCreateShader(type);
+     glShaderSource(shader, 1, &src, &length);
+     glCompileShader(shader);
+@@ -366,6 +368,8 @@
+         spdlog::default_logger()->flush();
+         abort();
+     }
++    SPDLOG_INFO("[PS4] [diag] compiled {} shader ok", what);
++    spdlog::default_logger()->flush();
+     return shader;
+ }
+ 
+@@ -598,6 +602,13 @@
+ }
+ 
+ void GfxRenderingAPIOGL::UploadTexture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
++    static int sDiagUploads = 0;
++    if (sDiagUploads < 10) {
++        ++sDiagUploads;
++        SPDLOG_INFO("[PS4] [diag] upload texture #{} {}x{} buf={}", sDiagUploads, width, height,
++                    (const void*)rgba32_buf);
++        spdlog::default_logger()->flush();
++    }
+     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
+     textures[mCurrentTextureIds[mCurrentTile]].width = width;
+     textures[mCurrentTextureIds[mCurrentTile]].height = height;
+@@ -665,6 +676,12 @@
+ }
+ 
+ void GfxRenderingAPIOGL::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
++    static int sDiagDraws = 0;
++    if (sDiagDraws < 5) {
++        ++sDiagDraws;
++        SPDLOG_INFO("[PS4] [diag] draw #{} tris={} vbo_len={}", sDiagDraws, buf_vbo_num_tris, buf_vbo_len);
++        spdlog::default_logger()->flush();
++    }
+     if (mCurrentDepthTest != mLastDepthTest || mCurrentDepthMask != mLastDepthMask) {
+         mLastDepthTest = mCurrentDepthTest;
+         mLastDepthMask = mCurrentDepthMask;
+@@ -789,6 +806,10 @@
+ 
+ void GfxRenderingAPIOGL::StartFrame() {
+     mFrameCount++;
++    if (mFrameCount <= 5) {
++        SPDLOG_INFO("[PS4] [diag] frame {} start", mFrameCount);
++        spdlog::default_logger()->flush();
++    }
+ }
+ 
+ void GfxRenderingAPIOGL::EndFrame() {
