@@ -1,7 +1,8 @@
 diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl_ps4.cpp
+index fe27740..45b5f58 100644
 --- a/src/fast/backends/gfx_opengl_ps4.cpp
 +++ b/src/fast/backends/gfx_opengl_ps4.cpp
-@@ -353,6 +353,8 @@
+@@ -353,6 +353,8 @@ static GLuint Ps4CompileShader(GLenum type, const std::string& source, const cha
      const GLint length = (GLint)source.size();
      GLint success = GL_FALSE;
  
@@ -10,7 +11,7 @@ diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl
      GLuint shader = glCreateShader(type);
      glShaderSource(shader, 1, &src, &length);
      glCompileShader(shader);
-@@ -366,6 +368,8 @@
+@@ -366,6 +368,8 @@ static GLuint Ps4CompileShader(GLenum type, const std::string& source, const cha
          spdlog::default_logger()->flush();
          abort();
      }
@@ -19,7 +20,7 @@ diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl
      return shader;
  }
  
-@@ -598,6 +602,13 @@
+@@ -598,6 +602,13 @@ void GfxRenderingAPIOGL::SelectTexture(int tile, GLuint texture_id) {
  }
  
  void GfxRenderingAPIOGL::UploadTexture(const uint8_t* rgba32_buf, uint32_t width, uint32_t height) {
@@ -33,7 +34,7 @@ diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl
      glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba32_buf);
      textures[mCurrentTextureIds[mCurrentTile]].width = width;
      textures[mCurrentTextureIds[mCurrentTile]].height = height;
-@@ -665,6 +676,12 @@
+@@ -665,6 +676,12 @@ void GfxRenderingAPIOGL::SetUseAlpha(bool use_alpha) {
  }
  
  void GfxRenderingAPIOGL::DrawTriangles(float buf_vbo[], size_t buf_vbo_len, size_t buf_vbo_num_tris) {
@@ -46,7 +47,7 @@ diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl
      if (mCurrentDepthTest != mLastDepthTest || mCurrentDepthMask != mLastDepthMask) {
          mLastDepthTest = mCurrentDepthTest;
          mLastDepthMask = mCurrentDepthMask;
-@@ -789,6 +806,10 @@
+@@ -789,6 +806,10 @@ void GfxRenderingAPIOGL::OnResize() {
  
  void GfxRenderingAPIOGL::StartFrame() {
      mFrameCount++;
@@ -57,3 +58,59 @@ diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl
  }
  
  void GfxRenderingAPIOGL::EndFrame() {
+diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
+index 7dca5de..42fcd9e 100644
+--- a/src/fast/interpreter.cpp
++++ b/src/fast/interpreter.cpp
+@@ -41,6 +41,7 @@
+ #include "libultraship/libultra/os.h"
+ 
+ #include <spdlog/fmt/fmt.h>
++#include <spdlog/spdlog.h> // TEMP DIAG: for [diag] flush in Interpreter::Run/StartFrame
+ 
+ #ifdef _WIN32
+ #include <windows.h>
+@@ -5093,12 +5094,16 @@ void Interpreter::StartFrame() {
+         mRendersToFb = false;
+     }
+ 
++    SPDLOG_INFO("[PS4] [diag] interp StartFrame exit (fb setup done)");
++    spdlog::default_logger()->flush();
+     mFbActive = false;
+ }
+ 
+ GfxExecStack g_exec_stack = {};
+ 
+ void Interpreter::RunGuiOnly() {
++    SPDLOG_INFO("[PS4] [diag] interp RunGuiOnly enter");
++    spdlog::default_logger()->flush();
+     SpReset();
+ 
+     mGetPixelDepthPending.clear();
+@@ -5106,6 +5111,8 @@ void Interpreter::RunGuiOnly() {
+ 
+     mRapi->UpdateFramebufferParameters(0, mGfxCurrentWindowDimensions.width, mGfxCurrentWindowDimensions.height, 1,
+                                        false, true, true, !mRendersToFb);
++    SPDLOG_INFO("[PS4] [diag] interp RunGuiOnly before rapi StartFrame");
++    spdlog::default_logger()->flush();
+     mRapi->StartFrame();
+     mRapi->StartDrawToFramebuffer(mRendersToFb ? mGameFb : 0, (float)mCurDimensions.height / mNativeDimensions.height);
+     mRapi->ClearFramebuffer(true, true);
+@@ -5139,6 +5146,8 @@ void Interpreter::RunGuiOnly() {
+ }
+ 
+ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements) {
++    SPDLOG_INFO("[PS4] [diag] interp Run enter");
++    spdlog::default_logger()->flush();
+     SpReset();
+ 
+     mGetPixelDepthPending.clear();
+@@ -5148,6 +5157,8 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
+ 
+     mRapi->UpdateFramebufferParameters(0, mGfxCurrentWindowDimensions.width, mGfxCurrentWindowDimensions.height, 1,
+                                        false, true, true, !mRendersToFb);
++    SPDLOG_INFO("[PS4] [diag] interp Run before rapi StartFrame");
++    spdlog::default_logger()->flush();
+     mRapi->StartFrame();
+     mRapi->StartDrawToFramebuffer(mRendersToFb ? mGameFb : 0, (float)mCurDimensions.height / mNativeDimensions.height);
+     mRapi->ClearFramebuffer(true, true);
