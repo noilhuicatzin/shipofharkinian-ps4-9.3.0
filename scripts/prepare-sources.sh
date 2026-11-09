@@ -5,12 +5,16 @@
 #   1. Clones HarbourMasters/Shipwright at tag 9.3.0 (with submodules:
 #      libultraship at the 9.3.0 pin 62e973a, torch at the 9.3.0 pin)
 #      into <workspace>/Shipwright (sibling of ps4port).
-#   2. Applies, in order, the four patches from patches/:
+#   2. Applies, in order, the patches from patches/:
 #        a. patches/shipwright-9.3.0-ps4.patch        (PS4 port, rebased to 9.3.0)
 #        b. patches/libultraship-9.3.0-ps4.patch     (inside Shipwright/libultraship)
-#        c. patches/shipwright-9.3.0-ps4-network-stub.patch
+#        c. patches/libultraship-9.3.0-ps4-diag.patch (TEMPORARY diagnostic logging
+#           for the silent first-frame crash: brackets shader compiles, frames,
+#           texture uploads and draws with flushed [diag] log lines. Remove it
+#           once the crash point is found.)
+#        d. patches/shipwright-9.3.0-ps4-network-stub.patch
 #           (stubs out SDL_net on PS4: Anchor/CrowdControl/Sail disabled)
-#        d. patches/torch-9.3.0-ps4.patch            (inside Shipwright/torch:
+#        e. patches/torch-9.3.0-ps4.patch            (inside Shipwright/torch:
 #           on PS4 Torch must use the prefix zlib instead of FetchContent zlib,
 #           whose shared+static targets both output libz.a on PS4 and make
 #           Ninja fail with "multiple rules generate _deps/zlib-build/libz.a")
@@ -69,6 +73,10 @@ apply_patch "$WORKSPACE/Shipwright" \
 apply_patch "$WORKSPACE/Shipwright/libultraship" \
     "$HERE/patches/libultraship-9.3.0-ps4.patch" \
     "libultraship-9.3.0-ps4.patch"
+
+apply_patch "$WORKSPACE/Shipwright/libultraship" \
+    "$HERE/patches/libultraship-9.3.0-ps4-diag.patch" \
+    "libultraship-9.3.0-ps4-diag.patch (TEMPORARY first-frame crash diagnostics)"
 
 apply_patch "$WORKSPACE/Shipwright" \
     "$HERE/patches/shipwright-9.3.0-ps4-network-stub.patch" \
