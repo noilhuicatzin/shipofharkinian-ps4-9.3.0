@@ -59,7 +59,7 @@ index fe27740..45b5f58 100644
  
  void GfxRenderingAPIOGL::EndFrame() {
 diff --git a/src/fast/interpreter.cpp b/src/fast/interpreter.cpp
-index 7dca5de..42fcd9e 100644
+index 7dca5de..e21713a 100644
 --- a/src/fast/interpreter.cpp
 +++ b/src/fast/interpreter.cpp
 @@ -41,6 +41,7 @@
@@ -70,9 +70,35 @@ index 7dca5de..42fcd9e 100644
  
  #ifdef _WIN32
  #include <windows.h>
-@@ -5093,12 +5094,16 @@ void Interpreter::StartFrame() {
+@@ -5065,15 +5066,22 @@ void Interpreter::StartFrame() {
+                 AdjustWidthHeightForScale(width, height, fb.second.native_width, fb.second.native_height);
+             }
+             if (width != fb.second.applied_width || height != fb.second.applied_height) {
++                SPDLOG_INFO("[PS4] [diag] interp StartFrame fb loop updating fb {} {}x{}", fb.first, width, height);
++                spdlog::default_logger()->flush();
+                 mRapi->UpdateFramebufferParameters(fb.first, width, height, 1, true, true, true, true);
+                 fb.second.applied_width = width;
+                 fb.second.applied_height = height;
+             }
+         }
+     }
++    SPDLOG_INFO("[PS4] [diag] interp StartFrame fb loop done");
++    spdlog::default_logger()->flush();
+ 
+     mPrvDimensions = mCurDimensions;
+     mPrevNativeDimensions = mNativeDimensions;
++    SPDLOG_INFO("[PS4] [diag] interp StartFrame before mGameFb update viewportMatch={} msaa={}",
++                ViewportMatchesRendererResolution(), mMsaaLevel);
++    spdlog::default_logger()->flush();
+     if (!ViewportMatchesRendererResolution() || mMsaaLevel > 1) {
+         mRendersToFb = true;
+         if (!ViewportMatchesRendererResolution()) {
+@@ -5092,13 +5100,19 @@ void Interpreter::StartFrame() {
+     } else {
          mRendersToFb = false;
      }
++    SPDLOG_INFO("[PS4] [diag] interp StartFrame after mGameFb update");
++    spdlog::default_logger()->flush();
  
 +    SPDLOG_INFO("[PS4] [diag] interp StartFrame exit (fb setup done)");
 +    spdlog::default_logger()->flush();
@@ -87,7 +113,7 @@ index 7dca5de..42fcd9e 100644
      SpReset();
  
      mGetPixelDepthPending.clear();
-@@ -5106,6 +5111,8 @@ void Interpreter::RunGuiOnly() {
+@@ -5106,6 +5120,8 @@ void Interpreter::RunGuiOnly() {
  
      mRapi->UpdateFramebufferParameters(0, mGfxCurrentWindowDimensions.width, mGfxCurrentWindowDimensions.height, 1,
                                         false, true, true, !mRendersToFb);
@@ -96,7 +122,7 @@ index 7dca5de..42fcd9e 100644
      mRapi->StartFrame();
      mRapi->StartDrawToFramebuffer(mRendersToFb ? mGameFb : 0, (float)mCurDimensions.height / mNativeDimensions.height);
      mRapi->ClearFramebuffer(true, true);
-@@ -5139,6 +5146,8 @@ void Interpreter::RunGuiOnly() {
+@@ -5139,6 +5155,8 @@ void Interpreter::RunGuiOnly() {
  }
  
  void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_replacements) {
@@ -105,7 +131,7 @@ index 7dca5de..42fcd9e 100644
      SpReset();
  
      mGetPixelDepthPending.clear();
-@@ -5148,6 +5157,8 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
+@@ -5148,6 +5166,8 @@ void Interpreter::Run(Gfx* commands, const std::unordered_map<Mtx*, MtxF>& mtx_r
  
      mRapi->UpdateFramebufferParameters(0, mGfxCurrentWindowDimensions.width, mGfxCurrentWindowDimensions.height, 1,
                                         false, true, true, !mRendersToFb);
