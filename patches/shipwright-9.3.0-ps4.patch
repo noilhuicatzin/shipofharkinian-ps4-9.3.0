@@ -466,7 +466,7 @@ index 5ab82274..91ab4d51 100644
  
  #include <ship/Context.h>
 diff --git a/soh/soh/SohGui/SohMenuSettings.cpp b/soh/soh/SohGui/SohMenuSettings.cpp
-index 476f99f3..ac297320 100644
+index 476f99f3..9855ba26 100644
 --- a/soh/soh/SohGui/SohMenuSettings.cpp
 +++ b/soh/soh/SohGui/SohMenuSettings.cpp
 @@ -138,7 +138,7 @@ void SohMenu::AddMenuSettings() {
@@ -478,6 +478,26 @@ index 476f99f3..ac297320 100644
      AddWidget(path, "Menu Controller Navigation", WIDGET_CVAR_CHECKBOX)
          .CVar(CVAR_IMGUI_CONTROLLER_NAV)
          .RaceDisable(false)
+@@ -193,6 +193,11 @@ void SohMenu::AddMenuSettings() {
+     AddWidget(path, "Reset Button Combination:", WIDGET_CVAR_BTN_SELECTOR)
+         .CVar("gSettings.ResetBtn")
+         .Options(BtnSelectorOptions().DefaultValue(BTN_CUSTOM_MODIFIER2));
++#ifndef __PS4__
++    // PS4: hidden. This button calls SDL_OpenURL("file:///...") to open the
++    // app folder in a file explorer; PS4 has no file explorer, and on console
++    // (run #13) clicking it crashed the game instantly, the log ending
++    // ~50 ms after the click with no error line.
+     AddWidget(path, "Open App Files Folder", WIDGET_BUTTON)
+         .RaceDisable(false)
+         .Callback([](WidgetInfo& info) {
+@@ -200,6 +205,7 @@ void SohMenu::AddMenuSettings() {
+             SDL_OpenURL(std::string("file:///" + std::filesystem::absolute(filesPath).string()).c_str());
+         })
+         .Options(ButtonOptions().Tooltip("Opens the folder that contains the save and mods folders, etc."));
++#endif
+ 
+     AddWidget(path, "Boot", WIDGET_SEPARATOR_TEXT);
+     AddWidget(path, "Boot Sequence", WIDGET_CVAR_COMBOBOX)
 diff --git a/soh/soh/port/ps4/Ps4Compat.c b/soh/soh/port/ps4/Ps4Compat.c
 new file mode 100644
 index 00000000..d82af8a5

@@ -370,10 +370,10 @@ index 0000000..55d1552
 +#endif // __PS4__
 diff --git a/include/ship/port/ps4/Ps4MousePointer.h b/include/ship/port/ps4/Ps4MousePointer.h
 new file mode 100644
-index 0000000..61e90b0
+index 0000000..f3efb55
 --- /dev/null
 +++ b/include/ship/port/ps4/Ps4MousePointer.h
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,112 @@
 +#pragma once
 +#ifdef __PS4__
 +
@@ -392,7 +392,7 @@ index 0000000..61e90b0
 +// processes (ImGui_ImplSDL2_ProcessEvent -> io.AddMousePosEvent /
 +// AddMouseButtonEvent, v1.91.9b).
 +//
-+// Input model (decided by Lux):
++// Input model (decided by Lux, updated after the run #13 console test):
 +//   * Touchpad = ABSOLUTE pointer (primary). Finger position maps to the
 +//     fixed 1920x1080 window using the touch resolution reported by
 +//     scePadGetControllerInformation (expected 1920x942; confirmed on console
@@ -400,12 +400,20 @@ index 0000000..61e90b0
 +//   * Right stick = RELATIVE virtual mouse (fallback). Integrates position
 +//     with a deadzone (~8000/32767, ImGui's thumb_dead_zone) and a fixed
 +//     speed; last input wins, one shared virtual cursor.
-+//   * Touchpad click = left mouse button. Menu: a SHORT TAP opens the menu
++//   * R2 = left mouse button (decided by Lux 2026-11-12: pressing the
++//     touchpad to click shook the pointer and felt awkward). R2 DOWN on
++//     press, UP on release, so menus, buttons and sliders behave like a
++//     real mouse hold. Only while the menu is visible.
++//   * Touchpad click = menu toggle only. A SHORT TAP opens the menu
 +//     instantly when it is closed; a LONG PRESS (~500 ms) closes it when it
-+//     is open. A tap never fires a click on release if it became a long press.
++//     is open. A short tap with the menu open does nothing (it no longer
++//     clicks, so it cannot fire by accident while moving the pointer).
 +//   * The pointer only injects events while the ImGui menu is visible; with
 +//     the menu closed the touchpad click and the stick keep their current
 +//     in-game behaviour (the click still opens the menu, via a BACK pulse).
++//   * The cursor auto-hides after kCursorHideMs without pointer activity
++//     (touch, stick or R2), and reappears on the next movement or press;
++//     Gui::StartFrame asks ShouldDrawCursor() every frame for this.
 +//
 +// The menu toggle reuses the existing path: the module tells PadUpdate which
 +// SDL_CONTROLLER_BUTTON_BACK state to apply to the virtual joystick, and
@@ -430,10 +438,18 @@ index 0000000..61e90b0
 +    // DS4 reports 1920x942. The console test confirms the real values.
 +    static constexpr uint16_t kTouchResFallbackX = 1920;
 +    static constexpr uint16_t kTouchResFallbackY = 942;
++    // R2 click threshold, on the 0..255 analog scale (data.analogButtons.r2).
++    // Half press: firm enough that a resting finger never clicks, light
++    // enough that a deliberate press always does.
++    static constexpr uint8_t kR2ClickThreshold = 128;
++    // Cursor auto-hide: milliseconds without pointer activity (touch, stick
++    // or R2) after which the cursor disappears until the next input.
++    static constexpr uint32_t kCursorHideMs = 3000;
 +
 +    // Called every frame from PadUpdate with the pad state scePadReadState
-+    // just returned. Reads data.touch (finger position) and data.rightStick
-+    // and caches the touch resolution on first call. Never touches SDL.
++    // just returned. Reads data.touch (finger position), data.rightStick and
++    // data.analogButtons.r2 and caches the touch resolution on first call.
++    // Never touches SDL.
 +    static void OnPadState(int32_t padHandle, const OrbisPadData& data);
 +
 +    // Called once per frame from GfxWindowBackendSDL2::HandleEvents (PS4
@@ -442,10 +458,15 @@ index 0000000..61e90b0
 +    // same frame. menuVisible is the menu state of the previous frame
 +    // (Gui::GetMenuOrMenubarVisible()); windowId is the main window's
 +    // SDL window id (ImGui discards mouse events whose windowID has no
-+    // viewport, so it must be the real one). Runs the tap/long-press state
-+    // machine, integrates the right stick, and pushes SDL_MOUSEMOTION /
-+    // SDL_MOUSEBUTTONDOWN / SDL_MOUSEBUTTONUP as needed.
++    // viewport, so it must be the real one). Runs the touchpad tap/long-press
++    // toggle, the R2 click edges, integrates the right stick, and pushes
++    // SDL_MOUSEMOTION / SDL_MOUSEBUTTONDOWN / SDL_MOUSEBUTTONUP as needed.
 +    static void Update(bool menuVisible, uint32_t windowId);
++
++    // Whether ImGui should draw its cursor this frame: only with the menu
++    // visible and pointer activity in the last kCursorHideMs. Gui::StartFrame
++    // calls this every frame instead of forcing MouseDrawCursor = true.
++    static bool ShouldDrawCursor(bool menuVisible);
 +
 +    // The SDL_CONTROLLER_BUTTON_BACK state PadUpdate should apply to the
 +    // virtual joystick. Replaces the old unconditional touchpad-click ->
@@ -2371,10 +2392,10 @@ index d9f1e44..49ff456 100644
 +#endif // __PS4__
 diff --git a/src/ship/port/ps4/Ps4MousePointer.cpp b/src/ship/port/ps4/Ps4MousePointer.cpp
 new file mode 100644
-index 0000000..7f83c1c
+index 0000000..51010c2
 --- /dev/null
 +++ b/src/ship/port/ps4/Ps4MousePointer.cpp
-@@ -0,0 +1,278 @@
+@@ -0,0 +1,316 @@
 +#ifdef __PS4__
 +
 +#include "ship/port/ps4/Ps4MousePointer.h"
@@ -2407,6 +2428,8 @@ index 0000000..7f83c1c
 +bool sClickPressed = false; // physical touchpad click bit
 +int16_t sStickX = 0;        // right stick, -32768..32767
 +int16_t sStickY = 0;
++bool sR2Pressed = false; // R2 past the click threshold (analog 0..255)
++uint8_t sR2Value = 0;
 +
 +// Touch resolution, queried once via scePadGetControllerInformation.
 +bool sResolutionKnown = false;
@@ -2420,10 +2443,14 @@ index 0000000..7f83c1c
 +bool sPressConsumed = false; // true once the press produced its action
 +uint32_t sLastUpdateMs = 0;
 +
-+// Virtual left-button state, for GetMouseState. A click is DOWN for exactly
-+// one frame: the DOWN is pushed in the release frame, the UP in the next.
-+bool sClickHeld = false;
-+bool sClickUpPending = false;
++// R2 click state. A click is DOWN on the R2 press edge and UP on release,
++// so ImGui sees a real mouse hold (buttons, sliders, drags).
++bool sPrevR2Pressed = false;
++bool sClickHeld = false; // virtual left-button state, for GetMouseState
++
++// Cursor activity, for the auto-hide in ShouldDrawCursor().
++bool sActivityInit = false;
++uint32_t sLastActivityMs = 0;
 +
 +// Menu-toggle (BACK) pulse: desired virtual-joystick state + countdown.
 +// PadUpdate applies sBackDesired every frame; Update() counts the pulse down.
@@ -2510,6 +2537,10 @@ index 0000000..7f83c1c
 +    sClickPressed = (data.buttons & ORBIS_PAD_BUTTON_TOUCH_PAD) != 0;
 +    sStickX = StickToAxis(data.rightStick.x);
 +    sStickY = StickToAxis(data.rightStick.y);
++    // R2 is analog (0..255); the digital R2 bit is not used so a resting
++    // finger and a half press are distinguished by one threshold.
++    sR2Value = data.analogButtons.r2;
++    sR2Pressed = sR2Value >= Ps4MousePointer::kR2ClickThreshold;
 +}
 +
 +void Ps4MousePointer::Update(bool menuVisible, uint32_t windowId) {
@@ -2524,27 +2555,24 @@ index 0000000..7f83c1c
 +        }
 +    }
 +    sLastUpdateMs = nowMs;
++    if (!sActivityInit) {
++        sLastActivityMs = nowMs;
++        sActivityInit = true;
++    }
 +
 +    // 1. Count the BACK pulse down (PadUpdate applies sBackDesired next frame).
 +    if (sBackPulseFrames > 0 && --sBackPulseFrames == 0) {
 +        sBackDesired = false;
 +    }
 +
-+    // 2. Finish the previous frame's click: the UP goes out one frame after
-+    //    the DOWN, so ImGui sees the button held for a full frame.
-+    if (sClickUpPending) {
-+        PushMouseButton(windowId, false, (int32_t)sCursorX, (int32_t)sCursorY);
-+        sClickHeld = false;
-+        sClickUpPending = false;
-+    }
-+
-+    // 3. Pointer movement, only while the menu is visible. With the menu
++    // 2. Pointer movement, only while the menu is visible. With the menu
 +    //    closed the touchpad and the stick keep their in-game behaviour.
 +    if (menuVisible) {
 +        if (sTouchActive) {
 +            // Absolute: the cursor goes where the finger is.
 +            sCursorX = sTouchX;
 +            sCursorY = sTouchY;
++            sLastActivityMs = nowMs;
 +        }
 +        int16_t ax = sStickX;
 +        int16_t ay = sStickY;
@@ -2558,6 +2586,7 @@ index 0000000..7f83c1c
 +            // Relative: integrate from the current position (last input wins).
 +            sCursorX += ((float)ax / 32767.0f) * kStickSpeedPxPerSec * dt;
 +            sCursorY += ((float)ay / 32767.0f) * kStickSpeedPxPerSec * dt;
++            sLastActivityMs = nowMs;
 +        }
 +        sCursorX = std::clamp(sCursorX, 0.0f, (float)(kDisplayWidth - 1));
 +        sCursorY = std::clamp(sCursorY, 0.0f, (float)(kDisplayHeight - 1));
@@ -2570,41 +2599,60 @@ index 0000000..7f83c1c
 +        }
 +    }
 +
-+    // 4. Click state machine (edges on the physical touchpad click bit).
-+    //    The menu state is the one sampled at press-down: the menu cannot
-+    //    change under a held press except through this module itself.
++    // 3. R2 click (left mouse button), only while the menu is visible.
++    //    DOWN on the press edge, UP on release: a real mouse hold, so
++    //    buttons, sliders and drags work. With the menu closed R2 keeps its
++    //    in-game behaviour and never injects a click.
++    if (menuVisible) {
++        if (sR2Pressed && !sPrevR2Pressed) {
++            PushMouseButton(windowId, true, (int32_t)sCursorX, (int32_t)sCursorY);
++            sClickHeld = true;
++            sLastActivityMs = nowMs;
++            // TEMP DIAG: confirm R2 lands as a click on console.
++            SPDLOG_INFO("[PS4] [diag] pointer R2 -> CLICK DOWN at {},{} (r2={})", (int)sCursorX,
++                        (int)sCursorY, (int)sR2Value);
++            spdlog::default_logger()->flush();
++        } else if (!sR2Pressed && sPrevR2Pressed) {
++            PushMouseButton(windowId, false, (int32_t)sCursorX, (int32_t)sCursorY);
++            sClickHeld = false;
++            sLastActivityMs = nowMs;
++            // TEMP DIAG: confirm R2 releases cleanly on console.
++            SPDLOG_INFO("[PS4] [diag] pointer R2 -> CLICK UP at {},{}", (int)sCursorX, (int)sCursorY);
++            spdlog::default_logger()->flush();
++        }
++    } else if (sClickHeld) {
++        // The menu closed while R2 was held: release the virtual button so
++        // ImGui never sees a stuck click.
++        PushMouseButton(windowId, false, (int32_t)sCursorX, (int32_t)sCursorY);
++        sClickHeld = false;
++    }
++    sPrevR2Pressed = sR2Pressed;
++
++    // 4. Touchpad click = menu toggle only (it no longer clicks: pressing
++    //    the touchpad shook the pointer). The menu state is the one sampled
++    //    at press-down: the menu cannot change under a held press except
++    //    through this module itself.
 +    const bool click = sClickPressed;
 +    if (click && !sPrevClick) {
 +        // Press-down: remember when and whether the menu was open.
 +        sPressStartMs = nowMs;
 +        sPressMenuOpen = menuVisible;
 +        sPressConsumed = false;
++        sLastActivityMs = nowMs;
 +    } else if (!click && sPrevClick) {
 +        // Release.
 +        if (!sPressConsumed) {
 +            const uint32_t heldMs = nowMs - sPressStartMs;
-+            if (heldMs < kLongPressMs) {
-+                if (sPressMenuOpen) {
-+                    // Short tap with the menu open: left mouse click.
-+                    // DOWN now, UP in the next frame (step 2 above).
-+                    PushMouseButton(windowId, true, (int32_t)sCursorX, (int32_t)sCursorY);
-+                    sClickHeld = true;
-+                    sClickUpPending = true;
-+                    // TEMP DIAG: confirm taps land as clicks on console.
-+                    SPDLOG_INFO("[PS4] [diag] pointer tap -> CLICK at {},{} (held {} ms)",
-+                                (int)sCursorX, (int)sCursorY, (int)heldMs);
-+                    spdlog::default_logger()->flush();
-+                } else {
-+                    // Short tap with the menu closed: open it instantly.
-+                    StartBackPulse();
-+                    // TEMP DIAG: confirm taps open the menu on console.
-+                    SPDLOG_INFO("[PS4] [diag] pointer tap -> OPEN menu (held {} ms)", (int)heldMs);
-+                    spdlog::default_logger()->flush();
-+                }
++            if (heldMs < kLongPressMs && !sPressMenuOpen) {
++                // Short tap with the menu closed: open it instantly.
++                StartBackPulse();
++                // TEMP DIAG: confirm taps open the menu on console.
++                SPDLOG_INFO("[PS4] [diag] pointer tap -> OPEN menu (held {} ms)", (int)heldMs);
++                spdlog::default_logger()->flush();
 +            }
++            // Short tap with the menu open: nothing (R2 is the click now).
 +            // Released after the long-press threshold: the long-press action
-+            // already fired at the threshold, so a release does nothing. A
-+            // tap therefore never fires a click if it became a long press.
++            // already fired at the threshold, so a release does nothing.
 +        }
 +        sPressConsumed = true;
 +    } else if (click && !sPressConsumed) {
@@ -2624,6 +2672,17 @@ index 0000000..7f83c1c
 +        }
 +    }
 +    sPrevClick = click;
++}
++
++bool Ps4MousePointer::ShouldDrawCursor(bool menuVisible) {
++    if (!menuVisible) {
++        return false;
++    }
++    if (!sActivityInit) {
++        return true; // first frames: show the cursor until activity is tracked
++    }
++    // Unsigned subtraction handles the SDL_GetTicks() wrap correctly.
++    return (SDL_GetTicks() - sLastActivityMs) <= kCursorHideMs;
 +}
 +
 +bool Ps4MousePointer::GetBackButtonPressed() {
@@ -2646,7 +2705,7 @@ index 0000000..7f83c1c
 +    sCursorX = std::clamp((float)x, 0.0f, (float)(kDisplayWidth - 1));
 +    sCursorY = std::clamp((float)y, 0.0f, (float)(kDisplayHeight - 1));
 +    // The next Update() pushes a MOTION for the new position (the int
-+    // comparison in step 3 sees it differ from sLastPushedX/Y).
++    // comparison in step 2 sees it differ from sLastPushedX/Y).
 +}
 +
 +} // namespace Ps4
@@ -3389,19 +3448,30 @@ index 13d9750..97d5fd6 100644
          SPDLOG_ERROR("Failed to load zip file \"{}\"", GetPath());
          return false;
 diff --git a/src/ship/window/gui/Gui.cpp b/src/ship/window/gui/Gui.cpp
-index 1f9279b..d18411f 100644
+index 1f9279b..3363117 100644
 --- a/src/ship/window/gui/Gui.cpp
 +++ b/src/ship/window/gui/Gui.cpp
-@@ -285,6 +285,13 @@ void Gui::HandleMouseCapture() {
+@@ -15,6 +15,9 @@
+ #include "ship/window/gui/Fonts.h"
+ #include "ship/window/gui/resource/GuiTextureFactory.h"
+ #include "ship/window/gui/resource/GuiTexture.h"
++#ifdef __PS4__
++#include "ship/port/ps4/Ps4MousePointer.h"
++#endif
+ 
+ namespace Ship {
+ #define TOGGLE_BTN ImGuiKey_F1
+@@ -285,6 +288,14 @@ void Gui::HandleMouseCapture() {
  }
  
  void Gui::StartFrame() {
 +#ifdef __PS4__
 +    // PS4 9.3.0: the DualShock 4 pointer injects synthetic SDL mouse events (see Ps4MousePointer),
 +    // but ImGui only draws its own cursor when io.MouseDrawCursor is set — and SDL has no real
-+    // mouse on PS4 to show. Set it every frame (idempotent); Fast3dGui::Init is deliberately not
-+    // used because the diag patch adds a marker right after mImpl = windowImpl there.
-+    mImGuiIo->MouseDrawCursor = true;
++    // mouse on PS4 to show. Ask the pointer module: it hides the cursor when the menu is closed
++    // or after 3 s without pointer activity, and shows it again on the next input. Fast3dGui::Init
++    // is deliberately not used because the diag patch adds a marker right after mImpl = windowImpl there.
++    mImGuiIo->MouseDrawCursor = Ship::Ps4::Ps4MousePointer::ShouldDrawCursor(GetMenuOrMenubarVisible());
 +#endif
      HandleMouseCapture();
      ImGuiBackendNewFrame();
