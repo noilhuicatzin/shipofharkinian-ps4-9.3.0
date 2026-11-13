@@ -119,16 +119,18 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..54e3bc7b
+index 00000000..95692870
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,721 @@
+@@ -0,0 +1,817 @@
 +#include "Achievements.h"
 +
 +#include <libultraship/bridge/consolevariablebridge.h>
 +#include <ship/Context.h>
 +#include <ship/window/Window.h>
 +#include <spdlog/spdlog.h>
++
++#include <SDL2/SDL.h>
 +
 +#include "soh/Enhancements/game-interactor/GameInteractor.h"
 +#include "soh/Notification/Notification.h"
@@ -538,6 +540,15 @@ index 00000000..54e3bc7b
 +    SaveNow();
 +}
 +
++void Hide(int id) {
++    // Only meaningful for revealed-but-still-locked story achievements:
++    // clears the Revealed CVar so the row shows "???" again on the next
++    // frame. Unlocked achievements are never hidden (IsRevealed is only
++    // consulted for locked rows in the menu).
++    CVarSetInteger(RevealedCVar(id).c_str(), 0);
++    SaveNow();
++}
++
 +bool HasUnseen() {
 +    return CVarGetInteger(kHasUnseen, 0) != 0;
 +}
@@ -799,7 +810,92 @@ index 00000000..54e3bc7b
 +    });
 +}
 +
++static void EmitTestToast() {
++    // Same shape as a real unlock toast (same "Ver en Logros" action, same
++    // ToastVisible bookkeeping so the touchpad shortcut sees it), but the
++    // text says TEST and nothing persistent is touched: no unlock CVar, no
++    // SaveNow, no unseen badge, no counter change.
++    SetToastVisible(true);
++    auto onToastDismissed = []() { SetToastVisible(false); };
++    Notification::Emit({
++        .prefix = Tr("Test notification", "Aviso de prueba"),
++        .message = Tr("Test toast — no achievement unlocked",
++                      "Aviso de prueba — ningún logro desbloqueado"),
++        .suffix = Tr("TEST", "PRUEBA"),
++        .actionLabel = Tr("View in Achievements", "Ver en Logros"),
++        .action = []() { OpenLogrosMenu(); },
++        .onDismiss = onToastDismissed,
++    });
++}
++
++// ---------------------------------------------------------------------------
++// Test toast combo (L3+R3): shows a test toast identical in behaviour to a
++// real unlock toast so the touchpad shortcut can be tested on demand,
++// without unlocking anything. Lux asked for this because the next real
++// unlock is hours of play away, and the shortcut can only be tested while
++// a toast is visible.
++// ---------------------------------------------------------------------------
++// The combo is read straight from the SDL game controller (same pattern as
++// OTRGlobals.cpp). On PS4 there is exactly one: the virtual pad, whose
++// LEFTSTICK/RIGHTSTICK buttons PadUpdate feeds from the physical L3/R3.
++// L3/R3 are not bound to any N64 button (Mapper only lists them for
++// display), so the combo conflicts with nothing in-game. The engine already
++// opens this controller (ConnectedPhysicalDeviceManager), and SDL refcounts
++// opens, so this handle is only borrowed: it is never closed here, only
++// dropped and re-scanned if detached.
++static SDL_GameController* sTestPad = nullptr;
++static bool sComboWasDown = false;
++
++static bool IsTestComboDown() {
++    if (sTestPad == nullptr || SDL_GameControllerGetAttached(sTestPad) == SDL_FALSE) {
++        // (Re)scan for the first game controller. No close: the engine owns
++        // the lifecycle; dropping a detached pointer is enough.
++        sTestPad = nullptr;
++        for (int i = 0; i < SDL_NumJoysticks(); ++i) {
++            if (SDL_IsGameController(i)) {
++                sTestPad = SDL_GameControllerOpen(i);
++                break;
++            }
++        }
++        if (sTestPad == nullptr) {
++            return false;
++        }
++    }
++    return SDL_GameControllerGetButton(sTestPad, SDL_CONTROLLER_BUTTON_LEFTSTICK) != 0 &&
++           SDL_GameControllerGetButton(sTestPad, SDL_CONTROLLER_BUTTON_RIGHTSTICK) != 0;
++}
++
++static bool IsMenuOpen() {
++    auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
++    if (gui == nullptr) {
++        return false;
++    }
++    auto menu = gui->GetMenu();
++    return menu != nullptr && menu->IsVisible();
++}
++
++static void CheckTestCombo() {
++    // Rising edge only: one toast per press, not one per frame while held.
++    const bool down = IsTestComboDown();
++    const bool pressed = down && !sComboWasDown;
++    sComboWasDown = down;
++    if (!pressed) {
++        return;
++    }
++    // Only in-game (a save loaded, menu closed) and only when no toast is
++    // already up (a real toast keeps its window).
++    if (!GameInteractor::IsSaveLoaded() || sVisibleToasts > 0) {
++        return;
++    }
++    if (IsMenuOpen()) {
++        return;
++    }
++    EmitTestToast();
++}
++
 +static void Tick() {
++    // Test-toast combo polls every frame (the unlock check below is throttled).
++    CheckTestCombo();
 +    // Throttle: check every 30 frames (~0.5 s at 60 fps). Achievements are
 +    // meta-progression; a half-second delay is unnoticeable.
 +    static int frameCounter = 0;
@@ -846,10 +942,10 @@ index 00000000..54e3bc7b
 +} // namespace Achievements
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.h b/soh/soh/Enhancements/Achievements/Achievements.h
 new file mode 100644
-index 00000000..7d853ad7
+index 00000000..7d69a421
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.h
-@@ -0,0 +1,79 @@
+@@ -0,0 +1,82 @@
 +#pragma once
 +
 +#include <string>
@@ -898,6 +994,9 @@ index 00000000..7d853ad7
 +bool IsUnlocked(int id);
 +bool IsRevealed(int id);
 +void Reveal(int id); // Mark a hidden achievement as revealed (spoiler shown).
++void Hide(int id);   // Hide a revealed-but-still-locked story achievement again
++                     // (clears its Revealed CVar; the row shows "???" again).
++                     // Unlocked achievements are never hidden.
 +bool HasUnseen();    // True when something new unlocked since the Logros menu
 +                     // was last opened (drives the badge on the Logros tab).
 +void MarkSeen();     // Clear the unseen flag (called when the Logros menu opens).
@@ -1401,7 +1500,7 @@ index 986f9337..e31c416b 100644
      gui->SetMenu(mSohMenu);
  
 diff --git a/soh/soh/SohGui/SohMenu.cpp b/soh/soh/SohGui/SohMenu.cpp
-index ae098993..ef7c7055 100644
+index ae098993..eda000f6 100644
 --- a/soh/soh/SohGui/SohMenu.cpp
 +++ b/soh/soh/SohGui/SohMenu.cpp
 @@ -87,6 +87,7 @@ void SohMenu::AddMenuElements() {
@@ -1412,24 +1511,33 @@ index ae098993..ef7c7055 100644
      AddMenuNetwork();
      AddMenuDevTools();
  
+@@ -166,6 +167,7 @@ void SohMenu::InitElement() {
+ 
+ void SohMenu::UpdateElement() {
+     Ship::Menu::UpdateElement();
++    UpdateAchievementsLanguage();
+ }
+ 
+ void SohMenu::Draw() {
 diff --git a/soh/soh/SohGui/SohMenu.h b/soh/soh/SohGui/SohMenu.h
-index feec116a..e72e021c 100644
+index feec116a..23900a4f 100644
 --- a/soh/soh/SohGui/SohMenu.h
 +++ b/soh/soh/SohGui/SohMenu.h
-@@ -42,6 +42,7 @@ class SohMenu : public Ship::Menu {
+@@ -42,6 +42,8 @@ class SohMenu : public Ship::Menu {
      void AddMenuEnhancements();
      void AddMenuDevTools();
      void AddMenuRandomizer();
 +    void AddMenuAchievements();
++    void UpdateAchievementsLanguage();
      void AddMenuNetwork();
      static void UpdateLanguageMap(std::map<int32_t, const char*>& languageMap);
  
 diff --git a/soh/soh/SohGui/SohMenuAchievements.cpp b/soh/soh/SohGui/SohMenuAchievements.cpp
 new file mode 100644
-index 00000000..f11b817e
+index 00000000..ca7eea1e
 --- /dev/null
 +++ b/soh/soh/SohGui/SohMenuAchievements.cpp
-@@ -0,0 +1,210 @@
+@@ -0,0 +1,286 @@
 +#include <imgui.h>
 +#include <set>
 +#include <ship/Context.h>
@@ -1519,6 +1627,17 @@ index 00000000..f11b817e
 +        ImGui::SameLine();
 +        ImGui::TextColored(kColorDesc, "(%s)",
 +                           Achievements::Tr("coming soon", "próximamente").c_str());
++    }
++    if (def.hidden && revealed && !unlocked) {
++        // Story achievement revealed (name visible) but still locked:
++        // offer a small "Hide" button to put it back to "???" (clears its
++        // Revealed CVar; takes effect on the next frame, no restart).
++        // Unlocked achievements never show it. The row already runs inside
++        // PushID(def.id), so the button ID is unique per row.
++        ImGui::SameLine();
++        if (ImGui::SmallButton(Achievements::Tr("Hide", "Ocultar").c_str())) {
++            Achievements::Hide(def.id);
++        }
 +    }
 +    ImGui::TextColored(kColorDesc, "%s", Achievements::Desc(def).c_str());
 +    ImGui::Separator();
@@ -1637,6 +1756,71 @@ index 00000000..f11b817e
 +    AddSidebarEntry("Logros", path.sidebarName, 1);
 +    AddWidget(path, Achievements::Tr("Randomizer achievements", "Logros del Randomizer"), WIDGET_CUSTOM)
 +        .CustomFunction(DrawRandomizerList);
++}
++
++// ---------------------------------------------------------------------------
++// Live language for the Logros menu labels.
++//
++// The widget labels (combobox, texts, separators, reward checkboxes) are
++// plain strings stored in WidgetInfo at menu construction (AddMenuAchievements
++// above), so they used to keep the language active at boot until the next
++// restart, while the achievement lists (WIDGET_CUSTOM, drawn live via Tr())
++// followed the selector immediately. MenuDrawItem reads widget.name fresh on
++// every draw, so rewriting the stored names when the language CVar changes
++// is enough: the next frame draws the new language. No rebuild of the menu,
++// no custom widgets, no ImGui state churn — and nothing else is touched.
++//
++// The table below must list every label AddMenuAchievements() creates, in
++// the same EN/ES wording. Matching is by current name (EN or ES form), so it
++// works no matter which language the game booted with, and widgets this
++// table does not know are left alone.
++static const std::pair<const char*, const char*> kAchievementsLabels[] = {
++    { "Language", "Idioma" },
++    { "Each reward can be turned off", "Cada recompensa se puede apagar" },
++    { "Rewards", "Recompensas" },
++    { "Visual rewards arrive in a later phase; the switches are already ready.",
++      "Las recompensas visuales llegan en una fase posterior; los interruptores ya están listos." },
++    { "Radiant slot", "Slot Radiante" },
++    { "Title", "Título" },
++    { "Filling Triforce", "Triforce que se llena" },
++    { "Logo glow", "Brillo del logo" },
++    { "Golden Triforce HUD icon", "Icono dorado del Triforce en el HUD" },
++    { "Secret message", "Mensaje secreto" },
++    { "Unlock jingle", "Jingle al desbloquear" },
++    { "Final fanfare", "Fanfarria final" },
++    { "Achievements", "Logros" },
++    { "Vanilla achievements", "Logros vainilla" },
++    { "Randomizer achievements", "Logros del Randomizer" },
++};
++
++// Last achievements language applied to the stored widget names (-1 = none yet).
++static int sAppliedAchievementsLanguage = -1;
++
++void SohMenu::UpdateAchievementsLanguage() {
++    if (!mMenuElementsInitialized) {
++        return;
++    }
++    const int language = Achievements::Language();
++    if (language == sAppliedAchievementsLanguage) {
++        return;
++    }
++    auto it = menuEntries.find("Logros");
++    if (it == menuEntries.end()) {
++        return;
++    }
++    for (auto& [sidebarName, sidebar] : it->second.sidebars) {
++        for (auto& column : sidebar.columnWidgets) {
++            for (WidgetInfo& widget : column) {
++                for (const auto& [en, es] : kAchievementsLabels) {
++                    if (widget.name == en || widget.name == es) {
++                        widget.name = Achievements::Tr(en, es);
++                        break;
++                    }
++                }
++            }
++        }
++    }
++    sAppliedAchievementsLanguage = language;
 +}
 +
 +} // namespace SohGui
