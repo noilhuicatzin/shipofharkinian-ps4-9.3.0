@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..95692870
+index 00000000..47586cb3
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,817 @@
+@@ -0,0 +1,1375 @@
 +#include "Achievements.h"
 +
 +#include <libultraship/bridge/consolevariablebridge.h>
@@ -143,6 +143,17 @@ index 00000000..95692870
 +#include "variables.h"
 +#include "z64save.h"
 +}
++
++// Run #20 additions: Randomizer achievements read the seed settings
++// (randomizer.h) and the win timestamps (gameplaystats.h); menu zoom /
++// scroll / input blocking need ImGui, the controller bridge and
++// OTRGlobals::ScaleImGui. These come after the C declarations above so
++// the headers see gSaveContext / SaveContext.
++#include <imgui.h>
++#include <libultraship/bridge/controllerbridge.h>
++#include "soh/OTRGlobals.h"
++#include "soh/Enhancements/gameplaystats.h"
++#include "soh/Enhancements/randomizer/randomizer.h"
 +
 +namespace Achievements {
 +
@@ -195,8 +206,11 @@ index 00000000..95692870
 +// Registry: all 112 achievements.
 +// Vanilla ids are the RetroAchievements numbers (the 7 cuts approved by Lux
 +// leave gaps: 41, 47, 59, 82, 84, 92, 100). Randomizer ids are 1000 + n.
-+// "implemented" is true only for the 13 progression achievements (phase 1);
-+// the rest show as locked in the Logros menu until a later phase wires them.
++// "implemented" is true for the 68 achievements with verified detection
++// (phase 1: 13 progression; run #20: 32 DIRECTO + 23 DIRECTO*). The rest
++// show as locked in the Logros menu until a later phase wires them: #35 and
++// #38 have no persistent flag (need runtime hooks), and the Randomizer set
++// (1001-1022) is a later phase.
 +// ---------------------------------------------------------------------------
 +static const std::vector<Def> kDefs = {
 +    // ---- Vanilla (90, 625 pts) ----
@@ -207,7 +221,7 @@ index 00000000..95692870
 +      "Recibe la Piedra Espiritual del Bosque.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_KOKIRI_EMERALD, true },
 +    { 3, "Rise and Shine!!", "¡Arriba, dormilón!", "Wake up Talon.",
-+      "Despierta a Talon.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Despierta a Talon.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 4, "A Royal Autograph", "Un autógrafo real", "Meet Princess Zelda for the first time.",
 +      "Conoce a la princesa Zelda por primera vez.", 5, Category::Vanilla, Type::Progression, true,
 +      nullptr, true },
@@ -234,7 +248,7 @@ index 00000000..95692870
 +      nullptr, true },
 +    { 12, "The Great Escape", "La gran escapada", "Escape Hyrule Castle with Zelda.",
 +      "Escapa del castillo de Hyrule con Zelda.", 5, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 13, "Drunken Master", "Maestro borracho", "Hit a Cucco 5 times in a row.",
 +      "Pega a un Cucco 5 veces seguidas.", 10, Category::Vanilla, Type::Missable, false, nullptr,
 +      false },
@@ -248,9 +262,9 @@ index 00000000..95692870
 +      ICON_MEDALLION_FIRE, true },
 +    { 17, "Bring Me to the Bottom of the Oceans", "Llévame al fondo del océano",
 +      "Sink to the bottom of Lake Hylia.", "Húndete hasta el fondo del lago Hylia.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, false },
++      Category::Vanilla, Type::None, false, nullptr, true },
 +    { 18, "A Breath of Fresh Air", "Un soplo de aire fresco", "Get some air after diving.",
-+      "Respira después de bucear.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Respira después de bucear.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 19, "Day of the Tentacles", "El día de los tentáculos",
 +      "Get grabbed by a tentacle in the Water Temple.",
 +      "Que te agarre un tentáculo en el Templo del Agua.", 10, Category::Vanilla, Type::Missable,
@@ -265,13 +279,13 @@ index 00000000..95692870
 +      "Despierta al Sabio de las Sombras.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_SHADOW, true },
 +    { 23, "Gerudo's Fan Club", "Club de fans gerudo", "Get caught by a Gerudo guard.",
-+      "Que te atrape una guardia Gerudo.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Que te atrape una guardia Gerudo.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 24, "A Horrible Face", "Una cara horrible", "Get a horrible face in the Gerudo Fortress.",
 +      "Que te pongan una cara horrible en la Fortaleza Gerudo.", 5, Category::Vanilla,
-+      Type::Missable, false, nullptr, false },
++      Type::Missable, false, nullptr, true },
 +    { 25, "Infamous Silver Gauntlets", "Los infames guanteletes de plata",
 +      "Obtain the Silver Gauntlets.", "Consigue los Guanteletes de Plata.", 5, Category::Vanilla,
-+      Type::None, false, nullptr, false },
++      Type::None, false, nullptr, true },
 +    { 26, "Twins of Evil", "Gemelas del mal", "Get hit by both Twinrova at once.",
 +      "Que te golpeen las dos Twinrova a la vez.", 10, Category::Vanilla, Type::Missable, false,
 +      nullptr, false },
@@ -280,7 +294,7 @@ index 00000000..95692870
 +      ICON_MEDALLION_SPIRIT, true },
 +    { 28, "To the Rescue", "Al rescate", "Save a Carpenter from the Gerudo Fortress.",
 +      "Rescata a un carpintero de la Fortaleza Gerudo.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 29, "King of Thieves", "Rey de los ladrones", "Become a member of the Gerudo tribe.",
 +      "Conviértete en miembro de la tribu Gerudo.", 10, Category::Vanilla, Type::None, false,
 +      nullptr, false },
@@ -289,135 +303,135 @@ index 00000000..95692870
 +      false },
 +    { 31, "Home Sweet Home", "Hogar, dulce hogar", "Banish Ganon to the void of the Evil Realm.",
 +      "Destierra a Ganon al vacío del Reino del Mal.", 25, Category::Vanilla, Type::WinCondition,
-+      true, nullptr, false },
++      true, nullptr, true },
 +    { 33, "Sniper Fury", "Furia de francotirador", "Hit 10 enemies with the bow in a row.",
 +      "Golpea a 10 enemigos seguidos con el arco.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 34, "Who Let the Dogs Out", "¿Quién soltó a los perros?", "Get chased by a dog.",
-+      "Que te persiga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Que te persiga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 35, "Money Solves Everything", "El dinero lo resuelve todo",
 +      "Pay 200 rupees to open a door.", "Paga 200 rupias para abrir una puerta.", 5,
 +      Category::Vanilla, Type::Missable, false, nullptr, false },
 +    { 36, "Troublemaker", "Alborotador", "Break 10 pots in a row.",
-+      "Rompe 10 jarrones seguidos.", 5, Category::Vanilla, Type::Missable, false, nullptr, false },
++      "Rompe 10 jarrones seguidos.", 5, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 37, "Super Cucco Catching", "Súper atrapa-cucco", "Catch all the Cuccos in Kakariko.",
 +      "Atrapa a todos los Cuccos de Kakariko.", 5, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 38, "You Make Me Feel So Good", "Me haces sentir tan bien",
 +      "Play the Bolero of Fire for Darunia.", "Toca el Bolero de Fuego para Darunia.", 5,
 +      Category::Vanilla, Type::None, false, nullptr, false },
 +    { 39, "Bullseye!!", "¡En el blanco!", "Hit the bullseye at the shooting gallery.",
 +      "Da en el blanco en la galería de tiro.", 5, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 40, "You Can Be a Star", "Puedes ser una estrella", "Get 1000 points at the shooting gallery.",
 +      "Saca 1000 puntos en la galería de tiro.", 5, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 42, "Shield Raider", "Ladrón de escudos", "Steal a shield with a Like Like.",
 +      "Que un Like Like te robe el escudo.", 5, Category::Vanilla, Type::Missable, false, nullptr,
-+      false },
++      true },
 +    { 43, "Catch Me If You Can", "Atrápame si puedes", "Catch the running man.",
-+      "Atrapa al hombre que corre.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Atrapa al hombre que corre.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 44, "Cuccos' Revenge", "La venganza de los cuccos", "Get attacked by a Cucco swarm.",
 +      "Que te ataque un enjambre de Cuccos.", 5, Category::Vanilla, Type::None, false, nullptr,
 +      false },
 +    { 45, "Roll Roll and Away", "Rueda, rueda y vete", "Roll off a cliff.",
-+      "Rueda por un acantilado.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Rueda por un acantilado.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 46, "Walking on a Tightrope", "Caminando por la cuerda floja",
 +      "Cross the Gerudo Valley bridge without falling.",
 +      "Cruza el puente del Valle Gerudo sin caer.", 5, Category::Vanilla, Type::Missable, false,
 +      nullptr, false },
 +    { 48, "Bombchu Bowling Star", "Estrella del bowling bombchu",
 +      "Get a perfect score at Bombchu Bowling.", "Saca la puntuación perfecta en el bowling bombchu.",
-+      5, Category::Vanilla, Type::None, false, nullptr, false },
++      5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 49, "Mouse Ka-Boom", "Mouse Ka-Boom", "Blow up a mouse with a bomb.",
-+      "Explota un ratón con una bomba.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Explota un ratón con una bomba.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 50, "On Fire", "En llamas", "Set yourself on fire.",
-+      "Préndete fuego.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Préndete fuego.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 51, "Stocking Nuts", "Almacenando nueces", "Collect 50 Deku Nuts.",
-+      "Consigue 50 nueces Deku.", 5, Category::Vanilla, Type::Missable, false, nullptr, false },
++      "Consigue 50 nueces Deku.", 5, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 52, "Magic Beans", "Frijoles mágicos", "Plant all 10 Magic Beans.",
-+      "Planta los 10 frijoles mágicos.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Planta los 10 frijoles mágicos.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 53, "The Way the World Learns to Dive", "Como el mundo aprende a bucear",
 +      "Obtain the Silver Scale.", "Consigue la Escama de Plata.", 5, Category::Vanilla,
 +      Type::Progression, true, nullptr, true },
 +    { 54, "Take Me Away", "Llévame lejos", "Get carried away by a bird.",
-+      "Que te lleve un pájaro.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Que te lleve un pájaro.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 56, "A Pretty Face", "Una cara bonita", "Get a pretty face in the Gerudo Fortress.",
 +      "Que te pongan una cara bonita en la Fortaleza Gerudo.", 5, Category::Vanilla, Type::None,
-+      false, nullptr, false },
++      false, nullptr, true },
 +    { 57, "Last Breath", "Último aliento", "Die in the Gerudo Training Ground.",
 +      "Muere en el campo de entrenamiento Gerudo.", 5, Category::Vanilla, Type::Missable, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 58, "Happy Mask Salesman", "El vendedor de la Máscara Feliz",
 +      "Complete the Happy Mask trading quest.", "Completa la misión de las máscaras.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, false },
++      Category::Vanilla, Type::None, false, nullptr, true },
 +    { 60, "Hook Me Away", "Engánchame", "Use the Hookshot to cross a gap.",
 +      "Usa el gancho para cruzar un hueco.", 5, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 61, "Ghost Chaser", "Cazafantasmas", "Catch a Poe.",
-+      "Atrapa un Poe.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Atrapa un Poe.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 62, "Jump Over", "Salta por encima", "Jump over an enemy.",
-+      "Salta por encima de un enemigo.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Salta por encima de un enemigo.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 63, "Pierre the Wanderer", "Pierre el vagabundo", "Find Pierre the Scarecrow.",
 +      "Encuentra a Pierre el Espantapájaros.", 5, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 64, "Poe Collector", "Coleccionista de Poes", "Sell 10 Poes to the Poe Collector.",
-+      "Vende 10 Poes al coleccionista.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++      "Vende 10 Poes al coleccionista.", 10, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 65, "Drunkard", "Borracho", "Drink Lon Lon Milk.",
-+      "Bebe leche Lon Lon.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Bebe leche Lon Lon.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 66, "Sniper Elite", "Francotirador de élite", "Hit 20 enemies with the bow in a row.",
 +      "Golpea a 20 enemigos seguidos con el arco.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 67, "Heat Resistant Tunic", "Túnica resistente al calor", "Obtain the Goron Tunic.",
-+      "Consigue la túnica Goron.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Consigue la túnica Goron.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 68, "Kiss That Frog", "Besa a esa rana", "Kiss a frog.",
-+      "Besa a una rana.", 5, Category::Vanilla, Type::Missable, false, nullptr, false },
++      "Besa a una rana.", 5, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 69, "The Flaming Arrow", "La flecha flamante", "Shoot a Fire Arrow.",
-+      "Dispara una flecha de fuego.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Dispara una flecha de fuego.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 70, "The Fabulous Froggish Tenors", "Los fabulosos tenores rana",
 +      "Get all 5 frogs to sing.", "Haz cantar a las 5 ranas.", 5, Category::Vanilla, Type::None,
-+      false, nullptr, false },
++      false, nullptr, true },
 +    { 71, "Seeing Is Believing", "Ver para creer", "See a ghost.",
-+      "Ve un fantasma.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Ve un fantasma.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 73, "Biggoron's Sword", "La espada de Biggoron", "Obtain Biggoron's Sword.",
-+      "Consigue la espada de Biggoron.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++      "Consigue la espada de Biggoron.", 10, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 74, "Ultimate Horse Master", "Maestro supremo del caballo", "Win all horse races.",
 +      "Gana todas las carreras de caballos.", 10, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 75, "Graduate of Gerudo's Training Ground", "Graduado del campo de entrenamiento Gerudo",
 +      "Complete the Gerudo Training Ground.", "Completa el campo de entrenamiento Gerudo.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, false },
++      Category::Vanilla, Type::None, false, nullptr, true },
 +    { 76, "Nayru's Love", "El amor de Nayru", "Obtain Nayru's Love.",
-+      "Consigue el Amor de Nayru.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Consigue el Amor de Nayru.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 77, "Musician", "Músico", "Play all 12 songs.",
-+      "Toca las 12 canciones.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Toca las 12 canciones.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 78, "Plenty of Hearts", "Muchos corazones", "Have 20 hearts.",
-+      "Ten 20 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++      "Ten 20 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 79, "Wind Runner", "Corredor del viento", "Use the Hover Boots to cross a gap.",
 +      "Usa las botas flotantes para cruzar un hueco.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 80, "The Rock", "La Roca", "Lift a big rock.",
-+      "Levanta una roca grande.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Levanta una roca grande.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 81, "A Man's Best Friend", "El mejor amigo del hombre", "Get a dog to follow you.",
-+      "Que te siga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Que te siga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 83, "A Woman's Best Friend", "La mejor amiga de la mujer", "Get a cat to follow you.",
-+      "Que te siga un gato.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Que te siga un gato.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 85, "My Broken Heart", "Mi corazón roto", "Break a heart container.",
-+      "Rompe un contenedor de corazón.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++      "Rompe un contenedor de corazón.", 10, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 86, "Family Reunion", "Reunión familiar", "Find all 100 Gold Skulltulas in one save.",
 +      "Encuentra las 100 Skulltulas doradas en una partida.", 25, Category::Vanilla, Type::None,
-+      false, nullptr, false },
++      false, nullptr, true },
 +    { 87, "Fishing Lessons", "Lecciones de pesca", "Catch a fish.",
-+      "Pesca un pez.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Pesca un pez.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 88, "Expert Angler", "Pescador experto", "Catch a big fish.",
-+      "Pesca un pez grande.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Pesca un pez grande.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 89, "Mischievous Hero", "Héroe travieso", "Prank a guard.",
-+      "Hazle una broma a un guardia.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++      "Hazle una broma a un guardia.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 90, "Accomplished Angler", "Pescador consumado", "Catch the biggest fish.",
 +      "Pesca el pez más grande.", 10, Category::Vanilla, Type::None, false, nullptr, false },
 +    { 91, "Cartographer", "Cartógrafo", "Get all dungeon maps.",
 +      "Consigue todos los mapas de las mazmorras.", 10, Category::Vanilla, Type::Missable, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 93, "Race Against the Clock", "Carrera contra el reloj", "Beat a timed challenge.",
 +      "Supera un reto contrarreloj.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
 +    { 94, "Dodgeball", "Balón prisionero", "Dodge 10 attacks in a row.",
@@ -442,33 +456,33 @@ index 00000000..95692870
 +      nullptr, false },
 +    { 1002, "Seed Beater", "Comedor de semillas", "Beat Ganon in a Randomizer seed.",
 +      "Derrota a Ganon en una seed del Randomizer.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1003, "Would You Kindly", "Would You Kindly", "Generate a seed with Entrance Shuffle.",
 +      "Genera una seed con Entrance Shuffle.", 10, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1004, "Token Shuffle", "Tokens revueltos", "Generate a seed with Token Shuffle.",
 +      "Genera una seed con Token Shuffle.", 5, Category::Randomizer, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 1005, "The price is a lie", "El precio es una mentira!",
 +      "Buy an item at an inflated shop price.", "Compra un objeto con sobreprecio en una tienda.",
 +      10, Category::Randomizer, Type::None, false, nullptr, false },
 +    { 1006, "Kokiri Sword Shuffle", "Espada Kokiri revuelta",
 +      "Generate a seed with the Kokiri Sword shuffled.",
 +      "Genera una seed con la Espada Kokiri revuelta.", 5, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1007, "This doesn't belong here", "esto no es de aquí",
 +      "Find a dungeon key outside its own dungeon.",
 +      "Consigue una llave fuera de su mazmorra.", 5, Category::Randomizer, Type::None, false,
 +      nullptr, false },
 +    { 1008, "Increased Damage", "Daño aumentado", "Beat Ganon with damage set to x2 or more.",
 +      "Derrota a Ganon con el daño aumentado (x2 o más).", 10, Category::Randomizer, Type::None,
-+      false, nullptr, false },
++      false, nullptr, true },
 +    { 1009, "Boss Rush", "Boss Rush", "Complete the Boss Rush.",
 +      "Completa el Boss Rush.", 25, Category::Randomizer, Type::None, false, nullptr, false },
 +    { 1010, "Wisdom, Power and Courage", "Sabiduría, poder y valor",
 +      "Win a seed with the Triforce Hunt win condition.",
 +      "Gana una seed con la condición de victoria Caza de la Trifuerza.", 25,
-+      Category::Randomizer, Type::None, false, nullptr, false },
++      Category::Randomizer, Type::None, false, nullptr, true },
 +    { 1011, "Praise the Sun", "Praise the Sun", "Beat a seed without dying once.",
 +      "Pásate una seed sin morir ni una vez.", 25, Category::Randomizer, Type::None, false,
 +      nullptr, false },
@@ -481,26 +495,26 @@ index 00000000..95692870
 +      Type::None, false, nullptr, false },
 +    { 1014, "100 Skulltulas", "100 Skulltulas", "Get all 100 Gold Skulltulas in a seed.",
 +      "Consigue las 100 Skulltulas doradas en una seed.", 25, Category::Randomizer, Type::None,
-+      false, nullptr, false },
++      false, nullptr, true },
 +    { 1015, "20 Hearts", "20 corazones", "Reach 20 hearts in a seed.",
 +      "Llega a 20 corazones en una seed.", 25, Category::Randomizer, Type::None, false, nullptr,
-+      false },
++      true },
 +    { 1016, "All 12 Songs", "Las 12 canciones", "Learn all 12 songs in a seed.",
 +      "Aprende las 12 canciones en una seed.", 10, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1017, "Full Equipment", "Todo el equipamiento", "Get all equipment in a seed.",
 +      "Consigue todo el equipamiento en una seed.", 10, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1018, "All Dungeon Rewards", "Todas las recompensas de mazmorra",
 +      "Get all 6 medallions and 3 Spiritual Stones in a seed.",
 +      "Consigue los 6 medallones y las 3 piedras en una seed.", 25, Category::Randomizer,
-+      Type::None, false, nullptr, false },
++      Type::None, false, nullptr, true },
 +    { 1019, "All Masks", "Todas las máscaras", "Get every mask in a seed.",
 +      "Consigue todas las máscaras en una seed.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1020, "Heartless", "Heartless", "Beat a seed with 3 hearts, no containers or pieces.",
 +      "Pásate una seed con 3 corazones, sin contenedores ni piezas.", 25, Category::Randomizer,
-+      Type::None, false, nullptr, false },
++      Type::None, false, nullptr, true },
 +    { 1021, "Flawless Boss Rush", "Boss Rush sin daño", "Complete the Boss Rush without taking damage.",
 +      "Completa el Boss Rush sin recibir daño.", 25, Category::Randomizer, Type::None, false,
 +      nullptr, false },
@@ -726,6 +740,378 @@ index 00000000..95692870
 +}
 +
 +// ---------------------------------------------------------------------------
++// Detection (phase 2, run #20: the 32 DIRECTO + 23 of the 25 DIRECTO*)
++// Every condition verified against the real 9.3.0 source (see
++// randomizer/RA-MAIN-SET.md). #35 (bribe the guard) and #38 (cow milk)
++// are NOT implemented: no persistent flag exists for either (verified by
++// reading the actors); they need runtime hooks, a later phase.
++// #31 (win condition) is handled separately in Tick(): there is no
++// persistent "game beaten" flag; the only signal is the live gameMode
++// END_CREDITS during the ending.
++// ---------------------------------------------------------------------------
++static int CountBottles() {
++    // Bottles held, excluding the un-delivered Ruto's Letter (which sits
++    // in a bottle slot but is not a bottle). Mirrors Logic::BottleCount.
++    int count = 0;
++    const u8* items = gSaveContext.inventory.items;
++    const u8 bottleSlots[] = { SLOT_BOTTLE_1, SLOT_BOTTLE_2, SLOT_BOTTLE_3, SLOT_BOTTLE_4 };
++    for (u8 slot : bottleSlots) {
++        if (items[slot] != ITEM_NONE && items[slot] != ITEM_LETTER_RUTO) {
++            ++count;
++        }
++    }
++    return count;
++}
++
++static bool CheckCartographer() {
++    // Map + compass in all 10 dungeons that have them; boss key only where
++    // one exists (the 5 temples + Ganon's Tower). Deku Tree, Dodongo's
++    // Cavern, Jabu-Jabu's Belly, Bottom of the Well and Ice Cavern have no
++    // boss key, so requiring it there would be impossible.
++    static const int kMapCompassScenes[] = {
++        SCENE_DEKU_TREE, SCENE_DODONGOS_CAVERN, SCENE_JABU_JABU, SCENE_FOREST_TEMPLE,
++        SCENE_FIRE_TEMPLE, SCENE_WATER_TEMPLE, SCENE_SPIRIT_TEMPLE, SCENE_SHADOW_TEMPLE,
++        SCENE_BOTTOM_OF_THE_WELL, SCENE_ICE_CAVERN,
++    };
++    for (int scene : kMapCompassScenes) {
++        if (!CHECK_DUNGEON_ITEM(DUNGEON_MAP, scene) ||
++            !CHECK_DUNGEON_ITEM(DUNGEON_COMPASS, scene)) {
++            return false;
++        }
++    }
++    static const int kBossKeyScenes[] = {
++        SCENE_FOREST_TEMPLE, SCENE_FIRE_TEMPLE, SCENE_WATER_TEMPLE, SCENE_SPIRIT_TEMPLE,
++        SCENE_SHADOW_TEMPLE, SCENE_GANONS_TOWER,
++    };
++    for (int scene : kBossKeyScenes) {
++        if (!CHECK_DUNGEON_ITEM(DUNGEON_KEY_BOSS, scene)) {
++            return false;
++        }
++    }
++    return true;
++}
++
++// ---------------------------------------------------------------------------
++// Detection (phase 3, run #20: the 13 easy Randomizer achievements)
++// Every condition verified against the real 9.3.0 source.
++// * A seed is loaded when IS_RANDO (the save's quest id,
++//   soh/include/z64save.h:413). Every in-seed achievement is gated on it,
++//   so vanilla play can never unlock a Randomizer achievement.
++// * The seed's settings live in Rando::Context::mOptions and are read via
++//   OTRGlobals::Instance->gRandomizer->GetRandoSettingValue: at generation
++//   the menu settings are copied into the Context
++//   (Settings::SetAllToContext, randomizer.cpp), and when a save is loaded
++//   the spoiler file restores them (Settings::ParseJson via
++//   Randomizer_ParseSpoiler at file select), so they describe the seed
++//   being played, not the menu. The seed-context guard
++//   (IsSeedGenerated || IsSpoilerLoaded) keeps stale options from a
++//   previous seed in the same session from unlocking anything when the
++//   spoiler file is missing.
++// * The win achievements (1002, 1008, 1010, 1020) are checked in Tick()
++//   before the save-loaded gate, like #31 (END_CREDITS), with the win
++//   timestamps as the discriminator: TIMESTAMP_DEFEAT_GANON is set only
++//   by the Ganon boss-defeat hook (BossDefeatTimestamps.cpp), and
++//   TIMESTAMP_TRIFORCE_COMPLETED only by the Triforce Hunt warp
++//   (hook_handlers.cpp:2742). A Triforce Hunt win therefore does NOT
++//   unlock "Beat Ganon" (1002/1008/1020), and a Ganon win does NOT unlock
++//   the hunt achievement (1010).
++// * 1017 "all equipment" = the 12 slots of the equipment screen: 3 swords,
++//   3 shields, 3 tunics, 3 boots. (ACHIEVEMENTS.md left the exact set
++//   open; this is the equipment screen.)
++// The other 9 Randomizer achievements are NOT implemented here
++// (1001 mods, 1005 sobreprecio, 1007 llave fuera, 1009 Boss Rush,
++// 1011 sin morir, 1012 menos de 5 h, 1013 recompensa fuera, 1021 Boss
++// Rush sin daño, 1022 cinco seeds): they need live tracking or mods.
++// ---------------------------------------------------------------------------
++static bool RandoContextReady() {
++    auto ctx = Rando::Context::GetInstance();
++    return ctx != nullptr && (ctx->IsSeedGenerated() || ctx->IsSpoilerLoaded());
++}
++
++static u8 RandoSetting(RandomizerSettingKey key) {
++    if (OTRGlobals::Instance == nullptr || OTRGlobals::Instance->gRandomizer == nullptr) {
++        return 0;
++    }
++    return OTRGlobals::Instance->gRandomizer->GetRandoSettingValue(key);
++}
++
++static bool CheckAllSongs() {
++    return CHECK_QUEST_ITEM(QUEST_SONG_MINUET) && CHECK_QUEST_ITEM(QUEST_SONG_BOLERO) &&
++           CHECK_QUEST_ITEM(QUEST_SONG_SERENADE) && CHECK_QUEST_ITEM(QUEST_SONG_REQUIEM) &&
++           CHECK_QUEST_ITEM(QUEST_SONG_NOCTURNE) && CHECK_QUEST_ITEM(QUEST_SONG_PRELUDE) &&
++           CHECK_QUEST_ITEM(QUEST_SONG_LULLABY) && CHECK_QUEST_ITEM(QUEST_SONG_EPONA) &&
++           CHECK_QUEST_ITEM(QUEST_SONG_SARIA) && CHECK_QUEST_ITEM(QUEST_SONG_SUN) &&
++           CHECK_QUEST_ITEM(QUEST_SONG_TIME) && CHECK_QUEST_ITEM(QUEST_SONG_STORMS);
++}
++
++static bool CheckAllEquipment() {
++    // Every slot of the equipment screen: 3 swords, 3 shields, 3 tunics,
++    // 3 boots. (Boots/tunics are equipment, not inventory.)
++    return CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_KOKIRI) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_MASTER) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_BIGGORON) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_SHIELD, EQUIP_INV_SHIELD_DEKU) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_SHIELD, EQUIP_INV_SHIELD_HYLIAN) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_SHIELD, EQUIP_INV_SHIELD_MIRROR) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_TUNIC, EQUIP_INV_TUNIC_KOKIRI) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_TUNIC, EQUIP_INV_TUNIC_GORON) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_TUNIC, EQUIP_INV_TUNIC_ZORA) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_BOOTS, EQUIP_INV_BOOTS_KOKIRI) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_BOOTS, EQUIP_INV_BOOTS_IRON) &&
++           CHECK_OWNED_EQUIP(EQUIP_TYPE_BOOTS, EQUIP_INV_BOOTS_HOVER);
++}
++
++static bool CheckAllMasks() {
++    static const u8 kMasks[] = {
++        ITEM_MASK_KEATON, ITEM_MASK_SKULL, ITEM_MASK_SPOOKY, ITEM_MASK_BUNNY,
++        ITEM_MASK_GORON, ITEM_MASK_ZORA, ITEM_MASK_GERUDO, ITEM_MASK_TRUTH,
++    };
++    for (u8 mask : kMasks) {
++        if (INV_CONTENT(mask) != mask) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool CheckAllDungeonRewards() {
++    return CHECK_QUEST_ITEM(QUEST_MEDALLION_FOREST) && CHECK_QUEST_ITEM(QUEST_MEDALLION_FIRE) &&
++           CHECK_QUEST_ITEM(QUEST_MEDALLION_WATER) && CHECK_QUEST_ITEM(QUEST_MEDALLION_SPIRIT) &&
++           CHECK_QUEST_ITEM(QUEST_MEDALLION_SHADOW) && CHECK_QUEST_ITEM(QUEST_MEDALLION_LIGHT) &&
++           CHECK_QUEST_ITEM(QUEST_KOKIRI_EMERALD) && CHECK_QUEST_ITEM(QUEST_GORON_RUBY) &&
++           CHECK_QUEST_ITEM(QUEST_ZORA_SAPPHIRE);
++}
++
++static bool CheckRandomizer(int id) {
++    // Every Randomizer achievement needs a seed loaded.
++    if (!IS_RANDO) {
++        return false;
++    }
++    switch (id) {
++        case 1003: // Would You Kindly — seed generated with Entrance Shuffle.
++            // FinalizeSettings resolves it to RO_GENERIC_ON when any
++            // entrance shuffle is on, else OFF (settings.cpp).
++            return RandoContextReady() && RandoSetting(RSK_SHUFFLE_ENTRANCES) != 0;
++        case 1004: // Token Shuffle — seed generated with Token Shuffle.
++            return RandoContextReady() && RandoSetting(RSK_SHUFFLE_TOKENS) != RO_TOKENSANITY_OFF;
++        case 1006: // Kokiri Sword Shuffle.
++            return RandoContextReady() && RandoSetting(RSK_SHUFFLE_KOKIRI_SWORD) != 0;
++        case 1014: // 100 Skulltulas in a seed.
++            return gSaveContext.inventory.gsTokens >= 100;
++        case 1015: // 20 hearts in a seed.
++            return gSaveContext.healthCapacity == 0x140;
++        case 1016: // All 12 songs in a seed.
++            return CheckAllSongs();
++        case 1017: // All equipment in a seed.
++            return CheckAllEquipment();
++        case 1018: // All 6 medallions + 3 Spiritual Stones in a seed.
++            return CheckAllDungeonRewards();
++        case 1019: // All masks in a seed.
++            return CheckAllMasks();
++        default:
++            return false;
++    }
++}
++
++// Win achievements (1002, 1008, 1010, 1020): checked in Tick() before
++// the save-loaded gate, like #31. Caller guarantees END_CREDITS and
++// IS_RANDO. The timestamps are the discriminator (see the section
++// comment above): a Triforce Hunt win sets TIMESTAMP_TRIFORCE_COMPLETED
++// and NOT TIMESTAMP_DEFEAT_GANON, so it unlocks only 1010.
++static bool CheckRandoWin(int id) {
++    switch (id) {
++        case 1002: // Seed Beater — beat Ganon in a seed.
++            return gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_DEFEAT_GANON] != 0;
++        case 1008: { // Increased Damage — beat Ganon with damage x2 or more.
++            if (gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_DEFEAT_GANON] == 0 ||
++                !RandoContextReady()) {
++                return false;
++            }
++            // Explicit comparisons, not >= : the damage enum order is
++            // verified (HALF, DEFAULT, DOUBLE, QUADRUPLE, OCTUPLE,
++            // SEXDECUPLE, OHKO) but >= on the enum relies on it staying
++            // sequential, so spell out every value >= DOUBLE.
++            const u8 damage = RandoSetting(RSK_DAMAGE_MULTIPLIER);
++            return damage == RO_DAMAGE_MULTIPLIER_DOUBLE ||
++                   damage == RO_DAMAGE_MULTIPLIER_QUADRUPLE ||
++                   damage == RO_DAMAGE_MULTIPLIER_OCTUPLE ||
++                   damage == RO_DAMAGE_MULTIPLIER_SEXDECUPLE || damage == RO_DAMAGE_MULTIPLIER_OHKO;
++        }
++        case 1010: // Wisdom, Power and Courage — Triforce Hunt win.
++            return gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_TRIFORCE_COMPLETED] != 0;
++        case 1020: // Heartless — beat Ganon with 3 hearts, no containers.
++            // healthCapacity 0x30 = 3 hearts: no containers (each +0x10)
++            // and no heart pieces (4 pieces = +0x10) can have been taken.
++            return gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_DEFEAT_GANON] != 0 &&
++                   gSaveContext.healthCapacity == 0x30;
++        default:
++            return false;
++    }
++}
++
++static bool CheckDirecto(int id) {
++    switch (id) {
++        // ---- DIRECTO (32): flag/item named in RA-MAIN-SET.md ----
++        case 12: // The Great Escape — won Epona (2nd race vs Ingo).
++            // EVENTCHKINF_EPONA_OBTAINED is never set in vanilla; the
++            // horses state 6 is the persistent trace of winning her.
++            return GET_EVENTINF_HORSES_STATE() == EVENTINF_HORSES_STATE_6;
++        case 17: // Bring Me to the Bottom of the Oceans — Iron Boots.
++            // Boots/tunics are equipment, not inventory (INV_CONTENT
++            // would read out of bounds: gItemSlots has 56 entries).
++            return CHECK_OWNED_EQUIP(EQUIP_TYPE_BOOTS, EQUIP_INV_BOOTS_IRON);
++        case 18: // A Breath of Fresh Air — Zora Tunic.
++            return CHECK_OWNED_EQUIP(EQUIP_TYPE_TUNIC, EQUIP_INV_TUNIC_ZORA);
++        case 23: // Gerudo's Fan Club — Gerudo Membership Card.
++            return CHECK_QUEST_ITEM(QUEST_GERUDO_CARD);
++        case 25: // Infamous Silver Gauntlets — strength level 2.
++            return CUR_UPG_VALUE(UPG_STRENGTH) == 2;
++        case 49: // Mouse Ka-Boom — Bombchus.
++            return INV_CONTENT(ITEM_BOMBCHU) == ITEM_BOMBCHU;
++        case 50: // On Fire — Din's Fire.
++            return INV_CONTENT(ITEM_DINS_FIRE) == ITEM_DINS_FIRE;
++        case 52: // Magic Beans — a Magic Bean.
++            return INV_CONTENT(ITEM_BEAN) == ITEM_BEAN;
++        case 54: // Take Me Away — Farore's Wind.
++            return INV_CONTENT(ITEM_FARORES_WIND) == ITEM_FARORES_WIND;
++        case 58: // Happy Mask Salesman — Mask of Truth.
++            return INV_CONTENT(ITEM_MASK_TRUTH) == ITEM_MASK_TRUTH;
++        case 60: // Hook Me Away — Hookshot.
++            return INV_CONTENT(ITEM_HOOKSHOT) == ITEM_HOOKSHOT;
++        case 61: // Ghost Chaser — Dampe's race in <= 60 s.
++            // Guard > 0: a new file's highScores are all 0.
++            return HIGH_SCORE(HS_DAMPE_RACE) > 0 && HIGH_SCORE(HS_DAMPE_RACE) <= 60;
++        case 64: // Poe Collector — 10 Big Poes (+100 pts each).
++            return HIGH_SCORE(HS_POE_POINTS) >= 1000;
++        case 65: // Drunkard — all 4 Bottles.
++            return CountBottles() >= 4;
++        case 67: // Heat Resistant Tunic — Goron Tunic.
++            return CHECK_OWNED_EQUIP(EQUIP_TYPE_TUNIC, EQUIP_INV_TUNIC_GORON);
++        case 69: // The Flaming Arrow — Fire Arrow.
++            return INV_CONTENT(ITEM_ARROW_FIRE) == ITEM_ARROW_FIRE;
++        case 71: // Seeing Is Believing — Lens of Truth.
++            return INV_CONTENT(ITEM_LENS) == ITEM_LENS;
++        case 73: // Biggoron's Sword.
++            // Giant's Knife shares the equipment bit; bgsFlag marks the
++            // real Biggoron Sword.
++            return CHECK_OWNED_EQUIP(EQUIP_TYPE_SWORD, EQUIP_INV_SWORD_BIGGORON) &&
++                   gSaveContext.bgsFlag;
++        case 75: // Graduate of Gerudo's Training Ground — Ice Arrows.
++            return INV_CONTENT(ITEM_ARROW_ICE) == ITEM_ARROW_ICE;
++        case 76: // Nayru's Love.
++            return INV_CONTENT(ITEM_NAYRUS_LOVE) == ITEM_NAYRUS_LOVE;
++        case 77: // Musician — all 12 songs.
++            return CheckAllSongs();
++        case 78: // Plenty of Hearts — 20 hearts.
++            return gSaveContext.healthCapacity == 0x140;
++        case 79: // Wind Runner — Running Man in < 90 s.
++            return HIGH_SCORE(HS_MARATHON) > 0 && HIGH_SCORE(HS_MARATHON) < 90;
++        case 80: // The Rock — double defense.
++            return gSaveContext.isDoubleDefenseAcquired == 1;
++        case 81: // A Man's Best Friend — 10 Skulltulas.
++            return gSaveContext.inventory.gsTokens >= 10;
++        case 83: // A Woman's Best Friend — 30 Skulltulas.
++            return gSaveContext.inventory.gsTokens >= 30;
++        case 85: // My Broken Heart — 50 Skulltulas.
++            return gSaveContext.inventory.gsTokens >= 50;
++        case 86: // Family Reunion — 100 Skulltulas.
++            return gSaveContext.inventory.gsTokens >= 100;
++        case 87: // Fishing Lessons — child fish >= 10 lb.
++            // highScores stores raw length, not pounds: 10 lb needs
++            // length >= 52 (weight = length^2 * 0.0036 + 0.5).
++            return (HIGH_SCORE(HS_FISHING) & HS_FISH_LENGTH_CHILD) >= 52;
++        case 88: // Expert Angler — adult golden fishing prize.
++            return HIGH_SCORE(HS_FISHING) & HS_FISH_PRIZE_ADULT;
++        case 89: // Mischievous Hero — stole the pond owner's hat.
++            return HIGH_SCORE(HS_FISHING) & HS_FISH_STOLE_HAT;
++        case 91: // Cartographer — all dungeon maps/compasses/boss keys.
++            return CheckCartographer();
++
++        // ---- DIRECTO* (23): persistent flag confirmed in the actor ----
++        case 3: // Rise and Shine!! — Talon back at the ranch.
++            return Flags_GetEventChkInf(EVENTCHKINF_TALON_RETURNED_FROM_CASTLE);
++        case 24: // A Horrible Face — Deku Nuts upgrade (scrub brothers).
++            // Hardened: the Poacher's Saw also sets the stage flag
++            // without the upgrade; the stage prize raises UPG_NUTS to 2+.
++            return Flags_GetItemGetInf(ITEMGETINF_OBTAINED_NUT_UPGRADE_FROM_STAGE) &&
++                   CUR_UPG_VALUE(UPG_NUTS) >= 2;
++        case 28: // To the Rescue — Zelda's final meeting.
++            return Flags_GetEventChkInf(EVENTCHKINF_RETURNED_TO_TEMPLE_OF_TIME_WITH_ALL_MEDALLIONS);
++        case 33: // Sniper Fury — shooting gallery prize (child).
++            return Flags_GetItemGetInf(ITEMGETINF_0D);
++        case 34: // Who Let the Dogs Out — lost dog returned.
++            return Flags_GetInfTable(INFTABLE_191);
++        case 36: // Troublemaker — angered a castle guard.
++            // Proxy: no flag marks the anger itself; the only persistent
++            // flag of the sequence is being caught/expelled, which the
++            // anger always leads to in the same chain.
++            return Flags_GetEventChkInf(EVENTCHKINF_CAUGHT_BY_CASTLE_GUARDS);
++        case 37: // Super Cucco Catching — ranch minigame prize.
++            return Flags_GetItemGetInf(ITEMGETINF_TALON_BOTTLE);
++        case 39: // Bullseye!! — bullet bag upgrade (Lost Woods).
++            return Flags_GetItemGetInf(ITEMGETINF_1D);
++        case 40: // You Can Be a Star — ocarina minigame final prize.
++            return Flags_GetItemGetInf(ITEMGETINF_17);
++        case 42: // Shield Raider — free Hylian Shield (grave chest).
++            // No "bought in shop" flag exists; the chest flag is the
++            // discriminator. Edge case: buying first, then opening the
++            // chest (blue rupee) still sets the chest flag.
++            return CHECK_OWNED_EQUIP(EQUIP_TYPE_SHIELD, EQUIP_INV_SHIELD_HYLIAN) &&
++                   (gSaveContext.sceneFlags[SCENE_GRAVE_WITH_FAIRYS_FOUNTAIN].chest & (1 << 0));
++        case 43: // Catch Me If You Can — Anju's cucco prize.
++            return Flags_GetItemGetInf(ITEMGETINF_0C);
++        case 45: // Roll Roll and Away — bomb bag upgrade (rolling Goron).
++            return Flags_GetInfTable(INFTABLE_11E);
++        case 48: // Bombchu Bowling Star — bomb bag upgrade (bowling).
++            return Flags_GetItemGetInf(ITEMGETINF_11);
++        case 51: // Stocking Nuts — BOUGHT Deku Nuts upgrade.
++            return Flags_GetInfTable(INFTABLE_BOUGHT_NUT_UPGRADE);
++        case 56: // A Pretty Face — Deku Sticks upgrade (scrub brothers).
++            return Flags_GetItemGetInf(ITEMGETINF_OBTAINED_STICK_UPGRADE_FROM_STAGE);
++        case 57: // Last Breath — dying guard's news.
++            return Flags_GetInfTable(INFTABLE_6C);
++        case 62: // Jump Over — ranch obstacle course prize.
++            // Set when talking to Malon after the race, not at the
++            // finish line itself.
++            return Flags_GetEventChkInf(EVENTCHKINF_WON_COW_IN_MALONS_RACE);
++        case 63: // Pierre the Wanderer — scarecrow's services.
++            return Flags_GetEventChkInf(EVENTCHKINF_PLAYED_SONG_FOR_SCARECROW_AS_ADULT);
++        case 66: // Sniper Elite — shooting gallery prize (adult).
++            return Flags_GetItemGetInf(ITEMGETINF_0E);
++        case 68: // Kiss That Frog — King Zora's kiss.
++            // Proxy: no flag is dedicated to the kiss; the kiss/Mweep
++            // scene and KING_ZORA_MOVED are the same event.
++            return Flags_GetEventChkInf(EVENTCHKINF_KING_ZORA_MOVED);
++        case 70: // The Fabulous Froggish Tenors — frog minigame complete.
++            // The choir bit (all 6 songs played) marks completion, not
++            // the Storms bit (just the 6th song).
++            return Flags_GetEventChkInf(EVENTCHKINF_SONGS_FOR_FROGS_CHOIR);
++        case 74: // Ultimate Horse Master — top horseback archery prize.
++            return Flags_GetItemGetInf(ITEMGETINF_0F);
++        default:
++            return false;
++    }
++}
++
++static bool CheckCondition(int id) {
++    if (IsProgression(id)) {
++        return CheckProgression(id);
++    }
++    const Def* def = FindDef(id);
++    if (def != nullptr && def->category == Category::Randomizer) {
++        return CheckRandomizer(id);
++    }
++    return CheckDirecto(id);
++}
++
++// The win achievements checked before the save-loaded gate in Tick():
++// #31 (vanilla) and the four Randomizer wins (1002, 1008, 1010, 1020).
++// They share the END_CREDITS signal, which IsSaveLoaded() never sees.
++static bool IsEndCreditsWin(int id) {
++    return id == 31 || id == 1002 || id == 1008 || id == 1010 || id == 1020;
++}
++
++// ---------------------------------------------------------------------------
 +// Unlock + toast
 +// ---------------------------------------------------------------------------
 +// Toast visibility, read by the PS4 touchpad shortcut (libultraship):
@@ -846,10 +1232,11 @@ index 00000000..95692870
 +static SDL_GameController* sTestPad = nullptr;
 +static bool sComboWasDown = false;
 +
-+static bool IsTestComboDown() {
++// (Re)scan for the first game controller. No close: the engine owns the
++// lifecycle; dropping a detached pointer is enough. Shared by the
++// L3+R3 test combo and the menu D-pad / stick handler below.
++static bool EnsurePad() {
 +    if (sTestPad == nullptr || SDL_GameControllerGetAttached(sTestPad) == SDL_FALSE) {
-+        // (Re)scan for the first game controller. No close: the engine owns
-+        // the lifecycle; dropping a detached pointer is enough.
 +        sTestPad = nullptr;
 +        for (int i = 0; i < SDL_NumJoysticks(); ++i) {
 +            if (SDL_IsGameController(i)) {
@@ -857,12 +1244,21 @@ index 00000000..95692870
 +                break;
 +            }
 +        }
-+        if (sTestPad == nullptr) {
-+            return false;
-+        }
 +    }
-+    return SDL_GameControllerGetButton(sTestPad, SDL_CONTROLLER_BUTTON_LEFTSTICK) != 0 &&
-+           SDL_GameControllerGetButton(sTestPad, SDL_CONTROLLER_BUTTON_RIGHTSTICK) != 0;
++    return sTestPad != nullptr;
++}
++
++static bool PadButton(SDL_GameControllerButton button) {
++    return EnsurePad() && SDL_GameControllerGetButton(sTestPad, button) != 0;
++}
++
++static int16_t PadAxis(SDL_GameControllerAxis axis) {
++    return EnsurePad() ? SDL_GameControllerGetAxis(sTestPad, axis) : 0;
++}
++
++static bool IsTestComboDown() {
++    return PadButton(SDL_CONTROLLER_BUTTON_LEFTSTICK) &&
++           PadButton(SDL_CONTROLLER_BUTTON_RIGHTSTICK);
 +}
 +
 +static bool IsMenuOpen() {
@@ -893,30 +1289,192 @@ index 00000000..95692870
 +    EmitTestToast();
 +}
 +
++// ---------------------------------------------------------------------------
++// Menu zoom, scroll and input priority (run #20)
++// The Logros menu is too small on a TV and its scrollbar too thin to grab
++// with the touchpad pointer, so the menu gets: a zoom (the existing
++// ImGui Scale setting), a wider scrollbar, and D-pad / stick scrolling
++// that needs no aiming.
++// * Zoom reuses the existing "ImGui Menu Scaling" setting
++//   (SohMenuSettings.cpp: "ImGuiScale", gSettings.ImGuiScale, 0 Small
++//   0.75x / 1 Normal 1.0x / 2 Large 1.5x / 3 X-Large 2.0x) and its
++//   OTRGlobals::ScaleImGui(). No new CVar, no duplicate setting. D-pad
++//   left/right steps it while the menu is open; the menu visibly resizes
++//   on each step, which is the feedback.
++// * Scroll: the scrollbar is widened to 28 px (at 1.0x scale) while the
++//   menu is open, and D-pad up/down (one notch per press, repeating while
++//   held) plus the left stick (analog) scroll the list by injecting into
++//   ImGui::GetIO().MouseWheel, which NewFrame consumes and resets, so the
++//   injection never accumulates. It scrolls the window under the pointer,
++//   like a real mouse wheel.
++// * Input priority (Lux's principle: the menu wins over gameplay while
++//   open): while the menu is open, game input is blocked through the
++//   ControlDeck block API, so the D-pad cannot leak into gameplay
++//   (notably ItemUnequip.cpp, which unequips items on D-pad). The menu
++//   itself is unaffected: its toggle (BACK) and the R2 pointer click go
++//   through ImGui, not ControlDeck. The block is applied once on the
++//   menu-open transition and released once on close.
++// * The D-pad is skipped when "Menu Controller Navigation" is enabled
++//   (gControlNav): then ImGui's own gamepad nav already owns the D-pad
++//   for focus movement, and this handler would double-act. On PS4 that
++//   setting's widget is compiled out, so it is off by default.
++// ---------------------------------------------------------------------------
++// Unique block id for the menu (per-caller ids; the input editor uses
++// 95237929). Fits in the uint16 the bridge takes.
++static constexpr uint16_t kMenuInputBlockId = 42424;
++static bool sMenuInputBlocked = false;
++static bool sMenuWasOpen = false;
++// Repeat state for the D-pad, per direction group: frames held and the
++// current direction (reset when the direction changes, so a flip steps
++// at once instead of waiting out the old hold).
++static int sZoomHoldFrames = 0;
++static int sZoomDir = 0;
++static int sScrollHoldFrames = 0;
++static int sScrollDir = 0;
++// Frames before the first repeat, then frames between repeats
++// (~0.4 s / ~0.15 s at 60 fps).
++static constexpr int kRepeatDelayFrames = 24;
++static constexpr int kRepeatRateFrames = 9;
++
++static bool RepeatStep(int dir, int& holdFrames, int& lastDir) {
++    if (dir == 0) {
++        holdFrames = 0;
++        lastDir = 0;
++        return false;
++    }
++    if (dir != lastDir) {
++        holdFrames = 0;
++        lastDir = dir;
++    }
++    ++holdFrames;
++    return holdFrames == 1 || (holdFrames > kRepeatDelayFrames &&
++                               (holdFrames - kRepeatDelayFrames) % kRepeatRateFrames == 0);
++}
++
++static void CheckMenuInput() {
++    const bool menuOpen = IsMenuOpen();
++
++    // --- input priority: block game input while the menu is open ---
++    if (menuOpen && !sMenuWasOpen) {
++        ControllerBlockGameInput(kMenuInputBlockId);
++        sMenuInputBlocked = true;
++    } else if (!menuOpen && sMenuWasOpen && sMenuInputBlocked) {
++        ControllerUnblockGameInput(kMenuInputBlockId);
++        sMenuInputBlocked = false;
++    }
++    sMenuWasOpen = menuOpen;
++    if (!menuOpen) {
++        sZoomHoldFrames = 0;
++        sZoomDir = 0;
++        sScrollHoldFrames = 0;
++        sScrollDir = 0;
++        return;
++    }
++
++    // --- wider scrollbar while the menu is open ---
++    // Set every frame: ScaleImGui()'s ScaleAllSizes rescales it on zoom
++    // change, and this keeps it at 28 px * the current font scale.
++    ImGui::GetStyle().ScrollbarSize = 28.0f * ImGui::GetIO().FontGlobalScale;
++
++    // The D-pad is ImGui's when controller navigation is on; skip it then
++    // (on PS4 that setting is compiled out, so it is off by default).
++    if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0) {
++        return;
++    }
++
++    // --- zoom: D-pad left/right steps the existing ImGuiScale setting ---
++    const int zoomDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ? 1 : 0) -
++                        (PadButton(SDL_CONTROLLER_BUTTON_DPAD_LEFT) ? 1 : 0);
++    if (RepeatStep(zoomDir, sZoomHoldFrames, sZoomDir)) {
++        const int current = CVarGetInteger(CVAR_SETTING("ImGuiScale"), 1);
++        int next = current + zoomDir;
++        if (next < 0) {
++            next = 0;
++        }
++        if (next > 3) {
++            next = 3;
++        }
++        if (next != current) {
++            CVarSetInteger(CVAR_SETTING("ImGuiScale"), next);
++            OTRGlobals::Instance->ScaleImGui();
++        }
++    }
++
++    // --- scroll: D-pad up/down (step + repeat) and left stick (analog) ---
++    const int scrollDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_UP) ? 1 : 0) -
++                          (PadButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN) ? 1 : 0);
++    if (RepeatStep(scrollDir, sScrollHoldFrames, sScrollDir)) {
++        ImGui::GetIO().MouseWheel += static_cast<float>(scrollDir);
++    }
++    // Left stick Y: up is negative on the axis, and a positive MouseWheel
++    // scrolls up. Deadzone ~8000/32768; full deflection ≈ 0.25 wheel
++    // units per frame (brisk but controllable on a 112-item list).
++    const int16_t stickY = PadAxis(SDL_CONTROLLER_AXIS_LEFTY);
++    if (stickY < -8000 || stickY > 8000) {
++        const float deflection = static_cast<float>(-stickY) / 32768.0f;
++        ImGui::GetIO().MouseWheel += deflection * 0.25f;
++    }
++}
++
 +static void Tick() {
-+    // Test-toast combo polls every frame (the unlock check below is throttled).
++    // Test-toast combo and menu input poll every frame (the unlock check
++    // below is throttled).
 +    CheckTestCombo();
++    CheckMenuInput();
 +    // Throttle: check every 30 frames (~0.5 s at 60 fps). Achievements are
 +    // meta-progression; a half-second delay is unnoticeable.
 +    static int frameCounter = 0;
 +    if ((++frameCounter % 30) != 0) {
 +        return;
 +    }
-+    // Only while a save is loaded (title screen / file select have no save).
-+    if (!GameInteractor::IsSaveLoaded()) {
-+        return;
-+    }
 +
 +    const int unlockedBefore = UnlockedCount();
 +    std::vector<const Def*> newlyUnlocked;
-+    for (const Def& def : kDefs) {
-+        if (!def.implemented || !IsProgression(def.id) || IsUnlocked(def.id)) {
-+            continue;
++    auto unlock = [&newlyUnlocked](const Def* def) {
++        CVarSetInteger(UnlockedCVar(def->id).c_str(), 1);
++        newlyUnlocked.push_back(def);
++        SPDLOG_INFO("[Achievements] Unlocked {} ({} pts)", def->titleEn, def->points);
++    };
++
++    // #31 Home Sweet Home (win condition) is checked BEFORE the
++    // save-loaded gate: there is no persistent "game beaten" flag in the
++    // save; the only signal is the live gameMode END_CREDITS during the
++    // ending (z_demo.c sets it in the two ending cutscene terminators and
++    // nowhere else). IsSaveLoaded() is false during the credits (it
++    // requires GAMEMODE_NORMAL), so the gated loop below would never see
++    // it. The unlock latches to its CVar + SaveNow, so it persists. The
++    // gameMode check needs no extra guard: END_CREDITS is only reachable
++    // by beating Ganon, and the demo system resets it to NORMAL when the
++    // credits end.
++    const Def* winDef = FindDef(31);
++    if (winDef != nullptr && winDef->implemented && !IsUnlocked(31) &&
++        gSaveContext.gameMode == GAMEMODE_END_CREDITS) {
++        unlock(winDef);
++    }
++
++    // Randomizer win achievements (1002, 1008, 1010, 1020): same
++    // END_CREDITS signal as #31, gated on a seed being loaded. The
++    // timestamps inside CheckRandoWin() tell a Ganon win apart from a
++    // Triforce Hunt win.
++    if (IS_RANDO && gSaveContext.gameMode == GAMEMODE_END_CREDITS) {
++        for (int id : { 1002, 1008, 1010, 1020 }) {
++            const Def* def = FindDef(id);
++            if (def != nullptr && def->implemented && !IsUnlocked(id) && CheckRandoWin(id)) {
++                unlock(def);
++            }
 +        }
-+        if (CheckProgression(def.id)) {
-+            CVarSetInteger(UnlockedCVar(def.id).c_str(), 1);
-+            newlyUnlocked.push_back(&def);
-+            SPDLOG_INFO("[Achievements] Unlocked {} ({} pts)", def.titleEn, def.points);
++    }
++
++    // Everything else: only while a save is loaded (title screen / file
++    // select have no save).
++    if (GameInteractor::IsSaveLoaded()) {
++        for (const Def& def : kDefs) {
++            if (!def.implemented || IsEndCreditsWin(def.id) || IsUnlocked(def.id)) {
++                continue;
++            }
++            if (CheckCondition(def.id)) {
++                unlock(&def);
++            }
 +        }
 +    }
 +    if (newlyUnlocked.empty()) {
