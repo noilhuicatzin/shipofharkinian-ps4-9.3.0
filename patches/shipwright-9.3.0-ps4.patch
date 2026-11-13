@@ -117,6 +117,792 @@ index f356d214..dddd2494 100644
  INSTALL(FILES ${CMAKE_BINARY_DIR}/gamecontrollerdb.txt DESTINATION . COMPONENT ship)
  endif()
  
+diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
+new file mode 100644
+index 00000000..24a5453c
+--- /dev/null
++++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
+@@ -0,0 +1,695 @@
++#include "Achievements.h"
++
++#include <libultraship/bridge/consolevariablebridge.h>
++#include <ship/Context.h>
++#include <ship/window/Window.h>
++#include <spdlog/spdlog.h>
++
++#include "soh/Enhancements/game-interactor/GameInteractor.h"
++#include "soh/Notification/Notification.h"
++#include "soh/ShipInit.hpp"
++#include "soh/soh/cvar_prefixes.h"
++
++extern "C" {
++#include "functions.h"
++#include "macros.h"
++#include "variables.h"
++#include "z64save.h"
++}
++
++namespace Achievements {
++
++// ---------------------------------------------------------------------------
++// CVar names
++// ---------------------------------------------------------------------------
++// Unlocks / meta-progression persist in the game config
++// (Ship_of_Harkinian.json) via the CVar system, so they survive across
++// saves and seeds. One CVar per achievement id keeps the state simple and
++// debuggable from the console.
++static const char* kUnlockedPrefix = "gAchievements.Unlocked.";
++static const char* kRevealedPrefix = "gAchievements.Revealed.";
++static const char* kHasUnseen = "gAchievements.HasUnseen";
++static const char* kLanguage = "gAchievements.Language"; // 0 = English, 1 = Español
++
++static std::string UnlockedCVar(int id) {
++    return std::string(kUnlockedPrefix) + std::to_string(id);
++}
++static std::string RevealedCVar(int id) {
++    return std::string(kRevealedPrefix) + std::to_string(id);
++}
++
++static void SaveNow() {
++    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
++}
++
++// ---------------------------------------------------------------------------
++// Icons (OTR texture paths, verified against
++// soh/assets/textures/icon_item_24_static/ and the Randomizer hash table).
++// Only set where the icon is known; nullptr elsewhere (art pass later).
++// ---------------------------------------------------------------------------
++static const char* ICON_KOKIRI_EMERALD =
++    "__OTR__textures/icon_item_24_static/gQuestIconKokiriEmeraldTex";
++static const char* ICON_GORON_RUBY = "__OTR__textures/icon_item_24_static/gQuestIconGoronRubyTex";
++static const char* ICON_ZORA_SAPPHIRE =
++    "__OTR__textures/icon_item_24_static/gQuestIconZoraSapphireTex";
++static const char* ICON_MEDALLION_FOREST =
++    "__OTR__textures/icon_item_24_static/gQuestIconMedallionForestTex";
++static const char* ICON_MEDALLION_FIRE =
++    "__OTR__textures/icon_item_24_static/gQuestIconMedallionFireTex";
++static const char* ICON_MEDALLION_WATER =
++    "__OTR__textures/icon_item_24_static/gQuestIconMedallionWaterTex";
++static const char* ICON_MEDALLION_SPIRIT =
++    "__OTR__textures/icon_item_24_static/gQuestIconMedallionSpiritTex";
++static const char* ICON_MEDALLION_SHADOW =
++    "__OTR__textures/icon_item_24_static/gQuestIconMedallionShadowTex";
++
++// ---------------------------------------------------------------------------
++// Registry: all 112 achievements.
++// Vanilla ids are the RetroAchievements numbers (the 7 cuts approved by Lux
++// leave gaps: 41, 47, 59, 82, 84, 92, 100). Randomizer ids are 1000 + n.
++// "implemented" is true only for the 13 progression achievements (phase 1);
++// the rest show as locked in the Logros menu until a later phase wires them.
++// ---------------------------------------------------------------------------
++static const std::vector<Def> kDefs = {
++    // ---- Vanilla (90, 625 pts) ----
++    // id, titleEn, titleEs, descEn, descEs, points, category, type, hidden, icon, implemented
++    { 1, "Spider Net", "Red de araña", "Get all 100 Gold Skulltulas.",
++      "Consigue las 100 Gold Skulltulas.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 2, "Entrusted Mission", "Misión encomendada", "Receive the Spiritual Stone of the Forest.",
++      "Recibe la Piedra Espiritual del Bosque.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_KOKIRI_EMERALD, true },
++    { 3, "Rise and Shine!!", "¡Arriba, dormilón!", "Wake up Talon.",
++      "Despierta a Talon.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 4, "A Royal Autograph", "Un autógrafo real", "Meet Princess Zelda for the first time.",
++      "Conoce a la princesa Zelda por primera vez.", 5, Category::Vanilla, Type::Progression, true,
++      nullptr, true },
++    { 5, "Dance Into the Fire", "Baila con el fuego", "Receive the Goron Bracelet from Darunia.",
++      "Recibe el brazalete de Darunia en la Ciudad Goron.", 5, Category::Vanilla, Type::Progression,
++      true, nullptr, true },
++    { 6, "Bombalicious", "Explosión de sabor", "Get blown up by your own bomb 3 times.",
++      "Que te explote tu propia bomba 3 veces.", 10, Category::Vanilla, Type::Missable, false,
++      nullptr, false },
++    { 7, "Soul Brothers", "Hermanos del alma", "Receive the Spiritual Stone of Fire.",
++      "Recibe la Piedra Espiritual del Fuego.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_GORON_RUBY, true },
++    { 8, "Rolling Thunder", "Trueno rodante", "Roll into a wall 30 times.",
++      "Rueda contra una pared 30 veces.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      false },
++    { 9, "Wedding Band", "Anillo de bodas", "Receive the Spiritual Stone of Water.",
++      "Recibe la Piedra Espiritual del Agua.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_ZORA_SAPPHIRE, true },
++    { 10, "Damsel in Distress", "Damisa en apuros", "Receive the Ocarina of Time from Zelda.",
++      "Recibe la Ocarina del Tiempo de Zelda.", 5, Category::Vanilla, Type::Progression, true,
++      nullptr, true },
++    { 11, "Hero of Time", "Héroe del Tiempo", "Pull the Master Sword from its pedestal.",
++      "Saca la Espada Maestra de su pedestal.", 5, Category::Vanilla, Type::Progression, true,
++      nullptr, true },
++    { 12, "The Great Escape", "La gran escapada", "Escape Hyrule Castle with Zelda.",
++      "Escapa del castillo de Hyrule con Zelda.", 5, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 13, "Drunken Master", "Maestro borracho", "Hit a Cucco 5 times in a row.",
++      "Pega a un Cucco 5 veces seguidas.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      false },
++    { 14, "Awakening", "Despertar", "Awaken the Forest Sage.",
++      "Despierta a la Sabia del Bosque.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_MEDALLION_FOREST, true },
++    { 15, "Hot Hot Hot", "¡Estoy que ardo!", "Get caught on fire 5 times.",
++      "Préndete fuego 5 veces.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 16, "Eternal Brothers", "Hermanos eternos", "Awaken the Fire Sage.",
++      "Despierta al Sabio del Fuego.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_MEDALLION_FIRE, true },
++    { 17, "Bring Me to the Bottom of the Oceans", "Llévame al fondo del océano",
++      "Sink to the bottom of Lake Hylia.", "Húndete hasta el fondo del lago Hylia.", 5,
++      Category::Vanilla, Type::None, false, nullptr, false },
++    { 18, "A Breath of Fresh Air", "Un soplo de aire fresco", "Get some air after diving.",
++      "Respira después de bucear.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 19, "Day of the Tentacles", "El día de los tentáculos",
++      "Get grabbed by a tentacle in the Water Temple.",
++      "Que te agarre un tentáculo en el Templo del Agua.", 10, Category::Vanilla, Type::Missable,
++      false, nullptr, false },
++    { 20, "Bride to Be", "Futura esposa", "Awaken the Water Sage.",
++      "Despierta a la Sabia del Agua.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_MEDALLION_WATER, true },
++    { 21, "Invisible One", "El invisible", "Get hit by an invisible enemy.",
++      "Que te golpee un enemigo invisible.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      false },
++    { 22, "The Shadow of the Hylians", "La sombra de los hylianos", "Awaken the Shadow Sage.",
++      "Despierta al Sabio de las Sombras.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_MEDALLION_SHADOW, true },
++    { 23, "Gerudo's Fan Club", "Club de fans gerudo", "Get caught by a Gerudo guard.",
++      "Que te atrape una guardia Gerudo.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 24, "A Horrible Face", "Una cara horrible", "Get a horrible face in the Gerudo Fortress.",
++      "Que te pongan una cara horrible en la Fortaleza Gerudo.", 5, Category::Vanilla,
++      Type::Missable, false, nullptr, false },
++    { 25, "Infamous Silver Gauntlets", "Los infames guanteletes de plata",
++      "Obtain the Silver Gauntlets.", "Consigue los Guanteletes de Plata.", 5, Category::Vanilla,
++      Type::None, false, nullptr, false },
++    { 26, "Twins of Evil", "Gemelas del mal", "Get hit by both Twinrova at once.",
++      "Que te golpeen las dos Twinrova a la vez.", 10, Category::Vanilla, Type::Missable, false,
++      nullptr, false },
++    { 27, "Brainwashed", "Lavado de cerebro", "Awaken the Spirit Sage.",
++      "Despierta a la Sabia del Espíritu.", 5, Category::Vanilla, Type::Progression, true,
++      ICON_MEDALLION_SPIRIT, true },
++    { 28, "To the Rescue", "Al rescate", "Save a Carpenter from the Gerudo Fortress.",
++      "Rescata a un carpintero de la Fortaleza Gerudo.", 5, Category::Vanilla, Type::None, false,
++      nullptr, false },
++    { 29, "King of Thieves", "Rey de los ladrones", "Become a member of the Gerudo tribe.",
++      "Conviértete en miembro de la tribu Gerudo.", 10, Category::Vanilla, Type::None, false,
++      nullptr, false },
++    { 30, "My Last Breath", "Mi último aliento", "Die with a fairy in a bottle.",
++      "Muere teniendo un hada en una botella.", 10, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 31, "Home Sweet Home", "Hogar, dulce hogar", "Banish Ganon to the void of the Evil Realm.",
++      "Destierra a Ganon al vacío del Reino del Mal.", 25, Category::Vanilla, Type::WinCondition,
++      true, nullptr, false },
++    { 33, "Sniper Fury", "Furia de francotirador", "Hit 10 enemies with the bow in a row.",
++      "Golpea a 10 enemigos seguidos con el arco.", 5, Category::Vanilla, Type::None, false,
++      nullptr, false },
++    { 34, "Who Let the Dogs Out", "¿Quién soltó a los perros?", "Get chased by a dog.",
++      "Que te persiga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 35, "Money Solves Everything", "El dinero lo resuelve todo",
++      "Pay 200 rupees to open a door.", "Paga 200 rupias para abrir una puerta.", 5,
++      Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 36, "Troublemaker", "Alborotador", "Break 10 pots in a row.",
++      "Rompe 10 jarrones seguidos.", 5, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 37, "Super Cucco Catching", "Súper atrapa-cucco", "Catch all the Cuccos in Kakariko.",
++      "Atrapa a todos los Cuccos de Kakariko.", 5, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 38, "You Make Me Feel So Good", "Me haces sentir tan bien",
++      "Play the Bolero of Fire for Darunia.", "Toca el Bolero de Fuego para Darunia.", 5,
++      Category::Vanilla, Type::None, false, nullptr, false },
++    { 39, "Bullseye!!", "¡En el blanco!", "Hit the bullseye at the shooting gallery.",
++      "Da en el blanco en la galería de tiro.", 5, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 40, "You Can Be a Star", "Puedes ser una estrella", "Get 1000 points at the shooting gallery.",
++      "Saca 1000 puntos en la galería de tiro.", 5, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 42, "Shield Raider", "Ladrón de escudos", "Steal a shield with a Like Like.",
++      "Que un Like Like te robe el escudo.", 5, Category::Vanilla, Type::Missable, false, nullptr,
++      false },
++    { 43, "Catch Me If You Can", "Atrápame si puedes", "Catch the running man.",
++      "Atrapa al hombre que corre.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 44, "Cuccos' Revenge", "La venganza de los cuccos", "Get attacked by a Cucco swarm.",
++      "Que te ataque un enjambre de Cuccos.", 5, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 45, "Roll Roll and Away", "Rueda, rueda y vete", "Roll off a cliff.",
++      "Rueda por un acantilado.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 46, "Walking on a Tightrope", "Caminando por la cuerda floja",
++      "Cross the Gerudo Valley bridge without falling.",
++      "Cruza el puente del Valle Gerudo sin caer.", 5, Category::Vanilla, Type::Missable, false,
++      nullptr, false },
++    { 48, "Bombchu Bowling Star", "Estrella del bowling bombchu",
++      "Get a perfect score at Bombchu Bowling.", "Saca la puntuación perfecta en el bowling bombchu.",
++      5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 49, "Mouse Ka-Boom", "Mouse Ka-Boom", "Blow up a mouse with a bomb.",
++      "Explota un ratón con una bomba.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 50, "On Fire", "En llamas", "Set yourself on fire.",
++      "Préndete fuego.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 51, "Stocking Nuts", "Almacenando nueces", "Collect 50 Deku Nuts.",
++      "Consigue 50 nueces Deku.", 5, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 52, "Magic Beans", "Frijoles mágicos", "Plant all 10 Magic Beans.",
++      "Planta los 10 frijoles mágicos.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 53, "The Way the World Learns to Dive", "Como el mundo aprende a bucear",
++      "Obtain the Silver Scale.", "Consigue la Escama de Plata.", 5, Category::Vanilla,
++      Type::Progression, true, nullptr, true },
++    { 54, "Take Me Away", "Llévame lejos", "Get carried away by a bird.",
++      "Que te lleve un pájaro.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 56, "A Pretty Face", "Una cara bonita", "Get a pretty face in the Gerudo Fortress.",
++      "Que te pongan una cara bonita en la Fortaleza Gerudo.", 5, Category::Vanilla, Type::None,
++      false, nullptr, false },
++    { 57, "Last Breath", "Último aliento", "Die in the Gerudo Training Ground.",
++      "Muere en el campo de entrenamiento Gerudo.", 5, Category::Vanilla, Type::Missable, false,
++      nullptr, false },
++    { 58, "Happy Mask Salesman", "El vendedor de la Máscara Feliz",
++      "Complete the Happy Mask trading quest.", "Completa la misión de las máscaras.", 5,
++      Category::Vanilla, Type::None, false, nullptr, false },
++    { 60, "Hook Me Away", "Engánchame", "Use the Hookshot to cross a gap.",
++      "Usa el gancho para cruzar un hueco.", 5, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 61, "Ghost Chaser", "Cazafantasmas", "Catch a Poe.",
++      "Atrapa un Poe.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 62, "Jump Over", "Salta por encima", "Jump over an enemy.",
++      "Salta por encima de un enemigo.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 63, "Pierre the Wanderer", "Pierre el vagabundo", "Find Pierre the Scarecrow.",
++      "Encuentra a Pierre el Espantapájaros.", 5, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 64, "Poe Collector", "Coleccionista de Poes", "Sell 10 Poes to the Poe Collector.",
++      "Vende 10 Poes al coleccionista.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++    { 65, "Drunkard", "Borracho", "Drink Lon Lon Milk.",
++      "Bebe leche Lon Lon.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 66, "Sniper Elite", "Francotirador de élite", "Hit 20 enemies with the bow in a row.",
++      "Golpea a 20 enemigos seguidos con el arco.", 5, Category::Vanilla, Type::None, false,
++      nullptr, false },
++    { 67, "Heat Resistant Tunic", "Túnica resistente al calor", "Obtain the Goron Tunic.",
++      "Consigue la túnica Goron.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 68, "Kiss That Frog", "Besa a esa rana", "Kiss a frog.",
++      "Besa a una rana.", 5, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 69, "The Flaming Arrow", "La flecha flamante", "Shoot a Fire Arrow.",
++      "Dispara una flecha de fuego.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 70, "The Fabulous Froggish Tenors", "Los fabulosos tenores rana",
++      "Get all 5 frogs to sing.", "Haz cantar a las 5 ranas.", 5, Category::Vanilla, Type::None,
++      false, nullptr, false },
++    { 71, "Seeing Is Believing", "Ver para creer", "See a ghost.",
++      "Ve un fantasma.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 73, "Biggoron's Sword", "La espada de Biggoron", "Obtain Biggoron's Sword.",
++      "Consigue la espada de Biggoron.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++    { 74, "Ultimate Horse Master", "Maestro supremo del caballo", "Win all horse races.",
++      "Gana todas las carreras de caballos.", 10, Category::Vanilla, Type::None, false, nullptr,
++      false },
++    { 75, "Graduate of Gerudo's Training Ground", "Graduado del campo de entrenamiento Gerudo",
++      "Complete the Gerudo Training Ground.", "Completa el campo de entrenamiento Gerudo.", 5,
++      Category::Vanilla, Type::None, false, nullptr, false },
++    { 76, "Nayru's Love", "El amor de Nayru", "Obtain Nayru's Love.",
++      "Consigue el Amor de Nayru.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 77, "Musician", "Músico", "Play all 12 songs.",
++      "Toca las 12 canciones.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 78, "Plenty of Hearts", "Muchos corazones", "Have 20 hearts.",
++      "Ten 20 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 79, "Wind Runner", "Corredor del viento", "Use the Hover Boots to cross a gap.",
++      "Usa las botas flotantes para cruzar un hueco.", 5, Category::Vanilla, Type::None, false,
++      nullptr, false },
++    { 80, "The Rock", "La Roca", "Lift a big rock.",
++      "Levanta una roca grande.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 81, "A Man's Best Friend", "El mejor amigo del hombre", "Get a dog to follow you.",
++      "Que te siga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 83, "A Woman's Best Friend", "La mejor amiga de la mujer", "Get a cat to follow you.",
++      "Que te siga un gato.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 85, "My Broken Heart", "Mi corazón roto", "Break a heart container.",
++      "Rompe un contenedor de corazón.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++    { 86, "Family Reunion", "Reunión familiar", "Find all 100 Gold Skulltulas in one save.",
++      "Encuentra las 100 Skulltulas doradas en una partida.", 25, Category::Vanilla, Type::None,
++      false, nullptr, false },
++    { 87, "Fishing Lessons", "Lecciones de pesca", "Catch a fish.",
++      "Pesca un pez.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 88, "Expert Angler", "Pescador experto", "Catch a big fish.",
++      "Pesca un pez grande.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 89, "Mischievous Hero", "Héroe travieso", "Prank a guard.",
++      "Hazle una broma a un guardia.", 5, Category::Vanilla, Type::None, false, nullptr, false },
++    { 90, "Accomplished Angler", "Pescador consumado", "Catch the biggest fish.",
++      "Pesca el pez más grande.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++    { 91, "Cartographer", "Cartógrafo", "Get all dungeon maps.",
++      "Consigue todos los mapas de las mazmorras.", 10, Category::Vanilla, Type::Missable, false,
++      nullptr, false },
++    { 93, "Race Against the Clock", "Carrera contra el reloj", "Beat a timed challenge.",
++      "Supera un reto contrarreloj.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 94, "Dodgeball", "Balón prisionero", "Dodge 10 attacks in a row.",
++      "Esquiva 10 ataques seguidos.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 95, "Whac-A-Mole", "Golpea al topo", "Hit 10 enemies with the Megaton Hammer.",
++      "Golpea a 10 enemigos con el martillo Megatón.", 10, Category::Vanilla, Type::Missable,
++      false, nullptr, false },
++    { 96, "Tentacles of the Deep", "Tentáculos de lo profundo",
++      "Get grabbed by a tentacle 5 times.", "Que te agarre un tentáculo 5 veces.", 10,
++      Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 97, "Invisible Stalker", "Acechador invisible", "Defeat an invisible enemy.",
++      "Derrota a un enemigo invisible.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      false },
++    { 98, "Double Trouble", "Doble problema", "Defeat two bosses at once.",
++      "Derrota a dos jefes a la vez.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 99, "Dark Lord", "Señor oscuro", "Defeat Ganon without taking damage.",
++      "Derrota a Ganon sin recibir daño.", 25, Category::Vanilla, Type::Missable, false, nullptr,
++      false },
++    // ---- Randomizer (22, 375 pts) ----
++    { 1001, "Not Vanilla Anymore", "No más vainilla", "Play with at least one .o2r mod active.",
++      "Juega con al menos un mod (.o2r) activo.", 5, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1002, "Seed Beater", "Comedor de semillas", "Beat Ganon in a Randomizer seed.",
++      "Derrota a Ganon en una seed del Randomizer.", 25, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1003, "Would You Kindly", "Would You Kindly", "Generate a seed with Entrance Shuffle.",
++      "Genera una seed con Entrance Shuffle.", 10, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1004, "Token Shuffle", "Tokens revueltos", "Generate a seed with Token Shuffle.",
++      "Genera una seed con Token Shuffle.", 5, Category::Randomizer, Type::None, false, nullptr,
++      false },
++    { 1005, "The price is a lie", "El precio es una mentira!",
++      "Buy an item at an inflated shop price.", "Compra un objeto con sobreprecio en una tienda.",
++      10, Category::Randomizer, Type::None, false, nullptr, false },
++    { 1006, "Kokiri Sword Shuffle", "Espada Kokiri revuelta",
++      "Generate a seed with the Kokiri Sword shuffled.",
++      "Genera una seed con la Espada Kokiri revuelta.", 5, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1007, "This doesn't belong here", "esto no es de aquí",
++      "Find a dungeon key outside its own dungeon.",
++      "Consigue una llave fuera de su mazmorra.", 5, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1008, "Increased Damage", "Daño aumentado", "Beat Ganon with damage set to x2 or more.",
++      "Derrota a Ganon con el daño aumentado (x2 o más).", 10, Category::Randomizer, Type::None,
++      false, nullptr, false },
++    { 1009, "Boss Rush", "Boss Rush", "Complete the Boss Rush.",
++      "Completa el Boss Rush.", 25, Category::Randomizer, Type::None, false, nullptr, false },
++    { 1010, "Wisdom, Power and Courage", "Sabiduría, poder y valor",
++      "Win a seed with the Triforce Hunt win condition.",
++      "Gana una seed con la condición de victoria Caza de la Trifuerza.", 25,
++      Category::Randomizer, Type::None, false, nullptr, false },
++    { 1011, "Praise the Sun", "Praise the Sun", "Beat a seed without dying once.",
++      "Pásate una seed sin morir ni una vez.", 25, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1012, "Gotta Go Fast", "¡Hay que ir rápido!", "Beat a seed in under 5 hours.",
++      "Pásate una seed en menos de 5 horas.", 25, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1013, "Does this belong here?", "esto es de aquí?",
++      "Find a dungeon reward outside its own dungeon.",
++      "Consigue una recompensa de mazmorra fuera de su mazmorra.", 5, Category::Randomizer,
++      Type::None, false, nullptr, false },
++    { 1014, "100 Skulltulas", "100 Skulltulas", "Get all 100 Gold Skulltulas in a seed.",
++      "Consigue las 100 Skulltulas doradas en una seed.", 25, Category::Randomizer, Type::None,
++      false, nullptr, false },
++    { 1015, "20 Hearts", "20 corazones", "Reach 20 hearts in a seed.",
++      "Llega a 20 corazones en una seed.", 25, Category::Randomizer, Type::None, false, nullptr,
++      false },
++    { 1016, "All 12 Songs", "Las 12 canciones", "Learn all 12 songs in a seed.",
++      "Aprende las 12 canciones en una seed.", 10, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1017, "Full Equipment", "Todo el equipamiento", "Get all equipment in a seed.",
++      "Consigue todo el equipamiento en una seed.", 10, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1018, "All Dungeon Rewards", "Todas las recompensas de mazmorra",
++      "Get all 6 medallions and 3 Spiritual Stones in a seed.",
++      "Consigue los 6 medallones y las 3 piedras en una seed.", 25, Category::Randomizer,
++      Type::None, false, nullptr, false },
++    { 1019, "All Masks", "Todas las máscaras", "Get every mask in a seed.",
++      "Consigue todas las máscaras en una seed.", 25, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1020, "Heartless", "Heartless", "Beat a seed with 3 hearts, no containers or pieces.",
++      "Pásate una seed con 3 corazones, sin contenedores ni piezas.", 25, Category::Randomizer,
++      Type::None, false, nullptr, false },
++    { 1021, "Flawless Boss Rush", "Boss Rush sin daño", "Complete the Boss Rush without taking damage.",
++      "Completa el Boss Rush sin recibir daño.", 25, Category::Randomizer, Type::None, false,
++      nullptr, false },
++    { 1022, "Five Seeds", "Completa 5 seeds", "Beat Ganon in 5 seeds.",
++      "Derrota a Ganon en 5 seeds.", 25, Category::Randomizer, Type::None, false, nullptr, false },
++};
++
++// ---------------------------------------------------------------------------
++// Registry access
++// ---------------------------------------------------------------------------
++const std::vector<Def>& GetDefs() {
++    return kDefs;
++}
++
++const Def* FindDef(int id) {
++    for (const Def& def : kDefs) {
++        if (def.id == id) {
++            return &def;
++        }
++    }
++    return nullptr;
++}
++
++// ---------------------------------------------------------------------------
++// State (persisted via CVar)
++// ---------------------------------------------------------------------------
++bool IsUnlocked(int id) {
++    return CVarGetInteger(UnlockedCVar(id).c_str(), 0) != 0;
++}
++
++bool IsRevealed(int id) {
++    return CVarGetInteger(RevealedCVar(id).c_str(), 0) != 0;
++}
++
++void Reveal(int id) {
++    CVarSetInteger(RevealedCVar(id).c_str(), 1);
++    SaveNow();
++}
++
++bool HasUnseen() {
++    return CVarGetInteger(kHasUnseen, 0) != 0;
++}
++
++void MarkSeen() {
++    if (HasUnseen()) {
++        CVarSetInteger(kHasUnseen, 0);
++        SaveNow();
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Language
++// ---------------------------------------------------------------------------
++// NOTE (deviation to flag to Lux): the design says the toast follows the
++// game's menu language, but the game has NO Spanish (Language enum is only
++// ENG/GER/FRA/JPN, and only languages with a message table are offered).
++// So "follow the menu language" would make the ES strings dead. The Logros
++// menu therefore has its own EN/ES toggle (default English, following the
++// menu language per the spec); Lux can switch it to Español and both the
++// menu and the toasts follow it.
++int Language() {
++    return CVarGetInteger(kLanguage, 0);
++}
++
++bool IsSpanish() {
++    return Language() == 1;
++}
++
++std::string Title(const Def& def) {
++    return IsSpanish() ? def.titleEs : def.titleEn;
++}
++
++std::string Desc(const Def& def) {
++    return IsSpanish() ? def.descEs : def.descEn;
++}
++
++std::string Tr(const std::string& en, const std::string& es) {
++    return IsSpanish() ? es : en;
++}
++
++// ---------------------------------------------------------------------------
++// Totals
++// ---------------------------------------------------------------------------
++int TotalPoints() {
++    int total = 0;
++    for (const Def& def : kDefs) {
++        total += def.points;
++    }
++    return total;
++}
++
++int UnlockedCount() {
++    int count = 0;
++    for (const Def& def : kDefs) {
++        if (IsUnlocked(def.id)) {
++            count++;
++        }
++    }
++    return count;
++}
++
++int UnlockedPoints() {
++    int points = 0;
++    for (const Def& def : kDefs) {
++        if (IsUnlocked(def.id)) {
++            points += def.points;
++        }
++    }
++    return points;
++}
++
++int CategoryPoints(Category category) {
++    int points = 0;
++    for (const Def& def : kDefs) {
++        if (def.category == category) {
++            points += def.points;
++        }
++    }
++    return points;
++}
++
++int CategoryUnlockedPoints(Category category) {
++    int points = 0;
++    for (const Def& def : kDefs) {
++        if (def.category == category && IsUnlocked(def.id)) {
++            points += def.points;
++        }
++    }
++    return points;
++}
++
++int CategoryUnlockedCount(Category category) {
++    int count = 0;
++    for (const Def& def : kDefs) {
++        if (def.category == category && IsUnlocked(def.id)) {
++            count++;
++        }
++    }
++    return count;
++}
++
++int CategoryTotalCount(Category category) {
++    int count = 0;
++    for (const Def& def : kDefs) {
++        if (def.category == category) {
++            count++;
++        }
++    }
++    return count;
++}
++
++bool RewardEnabled(const char* rewardCvarSuffix) {
++    return CVarGetInteger(
++               (std::string("gAchievements.Reward.") + rewardCvarSuffix).c_str(), 1) != 0;
++}
++
++// ---------------------------------------------------------------------------
++// Navigation (toast action "Ver en Logros")
++// ---------------------------------------------------------------------------
++void OpenLogrosMenu() {
++    CVarSetString(CVAR_SETTING("Menu.ActiveHeader"), "Logros");
++    CVarSetString(CVAR_SETTING("Menu.LogrosSidebarSection"), "Logros");
++    auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
++    auto menu = gui->GetMenu();
++    if (menu && !menu->IsVisible()) {
++        menu->Show();
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Detection (phase 1: the 13 progression achievements)
++// Every condition verified against the real 9.3.0 source (see
++// randomizer/RA-MAIN-SET.md). Quest bits: soh/include/z64item.h:85-105.
++// EventChkInf flags: soh/include/z64save.h:540-550.
++// ---------------------------------------------------------------------------
++static bool CheckProgression(int id) {
++    switch (id) {
++        case 2: // Entrusted Mission — Kokiri's Emerald
++            return CHECK_QUEST_ITEM(QUEST_KOKIRI_EMERALD);
++        case 4: // A Royal Autograph — met Princess Zelda (letter flag)
++            return Flags_GetEventChkInf(EVENTCHKINF_OBTAINED_ZELDAS_LETTER);
++        case 5: // Dance Into the Fire — Darunia's gift = Goron Bracelet
++                // (ITEM_BRACELET is the only source of strength level 1)
++            return CUR_UPG_VALUE(UPG_STRENGTH) >= 1;
++        case 7: // Soul Brothers — Goron's Ruby
++            return CHECK_QUEST_ITEM(QUEST_GORON_RUBY);
++        case 9: // Wedding Band — Zora's Sapphire
++            return CHECK_QUEST_ITEM(QUEST_ZORA_SAPPHIRE);
++        case 10: // Damsel in Distress — Ocarina of Time received
++            return Flags_GetEventChkInf(EVENTCHKINF_OBTAINED_OCARINA_OF_TIME);
++        case 11: // Hero of Time — Master Sword pulled from the pedestal
++            return Flags_GetEventChkInf(EVENTCHKINF_PULLED_MASTER_SWORD_FROM_PEDESTAL);
++        case 14: // Awakening — Forest Medallion
++            return CHECK_QUEST_ITEM(QUEST_MEDALLION_FOREST);
++        case 16: // Eternal Brothers — Fire Medallion
++            return CHECK_QUEST_ITEM(QUEST_MEDALLION_FIRE);
++        case 20: // Bride to Be — Water Medallion
++            return CHECK_QUEST_ITEM(QUEST_MEDALLION_WATER);
++        case 22: // The Shadow of the Hylians — Shadow Medallion
++            return CHECK_QUEST_ITEM(QUEST_MEDALLION_SHADOW);
++        case 27: // Brainwashed — Spirit Medallion
++            return CHECK_QUEST_ITEM(QUEST_MEDALLION_SPIRIT);
++        case 53: // The Way the World Learns to Dive — Silver Scale
++                 // (ITEM_SCALE_SILVER is the only source of scale level 1)
++            return CUR_UPG_VALUE(UPG_SCALE) >= 1;
++        default:
++            return false;
++    }
++}
++
++static bool IsProgression(int id) {
++    const Def* def = FindDef(id);
++    return def != nullptr && def->type == Type::Progression;
++}
++
++// ---------------------------------------------------------------------------
++// Unlock + toast
++// ---------------------------------------------------------------------------
++static void EmitUnlockToast(const std::vector<const Def*>& newlyUnlocked, bool firstEver) {
++    const std::string viewLabel = Tr("View in Achievements", "Ver en Logros");
++    auto openLogros = []() { OpenLogrosMenu(); };
++
++    if (firstEver) {
++        // Special notice on the first unlock ever.
++        int points = 0;
++        for (const Def* def : newlyUnlocked) {
++            points += def->points;
++        }
++        std::string message;
++        if (newlyUnlocked.size() == 1) {
++            message = Title(*newlyUnlocked.front());
++        } else if (IsSpanish()) {
++            message = spdlog::fmt_lib::format("{} logros nuevos", newlyUnlocked.size());
++        } else {
++            message = spdlog::fmt_lib::format("{} new achievements", newlyUnlocked.size());
++        }
++        Notification::Emit({
++            .itemIcon = newlyUnlocked.front()->icon,
++            .prefix = Tr("First achievement!", "¡Primer logro!"),
++            .message = message,
++            .suffix = spdlog::fmt_lib::format("+{} pts", points),
++            .actionLabel = viewLabel,
++            .action = openLogros,
++        });
++        return;
++    }
++
++    if (newlyUnlocked.size() == 1) {
++        const Def* def = newlyUnlocked.front();
++        Notification::Emit({
++            .itemIcon = def->icon,
++            .prefix = Tr("Achievement unlocked!", "¡Logro desbloqueado!"),
++            .message = Title(*def),
++            .suffix = spdlog::fmt_lib::format("+{} pts", def->points),
++            .actionLabel = viewLabel,
++            .action = openLogros,
++        });
++        return;
++    }
++
++    // Several unlocked in the same tick (e.g. loading an old save): one
++    // summary toast instead of a stack of them.
++    int points = 0;
++    for (const Def* def : newlyUnlocked) {
++        points += def->points;
++    }
++    const std::string summary =
++        IsSpanish() ? spdlog::fmt_lib::format("{} logros nuevos", newlyUnlocked.size())
++                    : spdlog::fmt_lib::format("{} new achievements", newlyUnlocked.size());
++    Notification::Emit({
++        .prefix = Tr("Achievements unlocked!", "¡Logros desbloqueados!"),
++        .message = summary,
++        .suffix = spdlog::fmt_lib::format("+{} pts", points),
++        .actionLabel = viewLabel,
++        .action = openLogros,
++    });
++}
++
++static void Tick() {
++    // Throttle: check every 30 frames (~0.5 s at 60 fps). Achievements are
++    // meta-progression; a half-second delay is unnoticeable.
++    static int frameCounter = 0;
++    if ((++frameCounter % 30) != 0) {
++        return;
++    }
++    // Only while a save is loaded (title screen / file select have no save).
++    if (!GameInteractor::IsSaveLoaded()) {
++        return;
++    }
++
++    const int unlockedBefore = UnlockedCount();
++    std::vector<const Def*> newlyUnlocked;
++    for (const Def& def : kDefs) {
++        if (!def.implemented || !IsProgression(def.id) || IsUnlocked(def.id)) {
++            continue;
++        }
++        if (CheckProgression(def.id)) {
++            CVarSetInteger(UnlockedCVar(def.id).c_str(), 1);
++            newlyUnlocked.push_back(&def);
++            SPDLOG_INFO("[Achievements] Unlocked {} ({} pts)", def.titleEn, def.points);
++        }
++    }
++    if (newlyUnlocked.empty()) {
++        return;
++    }
++    CVarSetInteger(kHasUnseen, 1);
++    SaveNow();
++    EmitUnlockToast(newlyUnlocked, unlockedBefore == 0);
++}
++
++// ---------------------------------------------------------------------------
++// Init
++// ---------------------------------------------------------------------------
++void Init() {
++    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(Tick);
++}
++
++static RegisterShipInitFunc initFunc(Init);
++
++} // namespace Achievements
+diff --git a/soh/soh/Enhancements/Achievements/Achievements.h b/soh/soh/Enhancements/Achievements/Achievements.h
+new file mode 100644
+index 00000000..7d853ad7
+--- /dev/null
++++ b/soh/soh/Enhancements/Achievements/Achievements.h
+@@ -0,0 +1,79 @@
++#pragma once
++
++#include <string>
++#include <vector>
++
++// Local achievement system for Ship of Harkinian (PS4 port, 9.3.0).
++//
++// Design (closed 2026-11-12): 112 local achievements, 1000 points
++// (90 vanilla / 625 pts + 22 Randomizer / 375 pts). Local only: NOT PSN
++// trophies, NOT synced to RetroAchievements. Meta-progression: unlocks
++// persist across saves and seeds and give no gameplay advantage.
++// Each achievement carries title + description in EN and ES; the display
++// language is chosen in the Logros menu (gAchievements.Language).
++// The 14 story achievements (13 progression + 1 win condition) are hidden
++// ("???") until unlocked, and can be revealed by tapping them (spoiler
++// warning). Visual rewards (slot, titles, Triforce, logo, HUD, secret
++// message, jingle, fanfare) are a later phase; the toggle framework is
++// ready here.
++
++namespace Achievements {
++
++enum class Category { Vanilla, Randomizer };
++
++enum class Type { Progression, WinCondition, Missable, None };
++
++struct Def {
++    int id;               // Vanilla: RetroAchievements number (1-100, gaps = cut).
++                          // Randomizer: 1000 + number (1001-1022).
++    const char* titleEn;  // English title
++    const char* titleEs;  // Spanish title
++    const char* descEn;   // English description
++    const char* descEs;   // Spanish description
++    int points;
++    Category category;
++    Type type;
++    bool hidden;      // Story achievement: shown as "???" until unlocked.
++    const char* icon; // OTR texture path (e.g. "__OTR__textures/...") or nullptr.
++    bool implemented; // Detection wired (phase 1: only the 13 progression).
++};
++
++// Full registry (all 112 entries). Detection is wired only for the
++// implemented ones; the rest show as locked in the Logros menu.
++const std::vector<Def>& GetDefs();
++const Def* FindDef(int id);
++
++bool IsUnlocked(int id);
++bool IsRevealed(int id);
++void Reveal(int id); // Mark a hidden achievement as revealed (spoiler shown).
++bool HasUnseen();    // True when something new unlocked since the Logros menu
++                     // was last opened (drives the badge on the Logros tab).
++void MarkSeen();     // Clear the unseen flag (called when the Logros menu opens).
++
++// Display language: 0 = English, 1 = Español (CVar gAchievements.Language).
++int Language();
++bool IsSpanish();
++std::string Title(const Def& def);
++std::string Desc(const Def& def);
++// Translate a menu UI string to the display language.
++std::string Tr(const std::string& en, const std::string& es);
++
++int TotalPoints();    // 1000 (625 vanilla + 375 randomizer).
++int UnlockedCount();  // Unlocked achievements across both categories.
++int UnlockedPoints(); // Sum of points of unlocked achievements.
++int CategoryPoints(Category category);
++int CategoryUnlockedPoints(Category category);
++int CategoryUnlockedCount(Category category);
++int CategoryTotalCount(Category category);
++
++// Reward toggles (framework; the visuals land in a later phase).
++// Each reward has its own switch in the Logros menu; everything is off-able.
++bool RewardEnabled(const char* rewardCvarSuffix);
++
++// Navigate the SoH menu to the Logros section (used by the toast action).
++void OpenLogrosMenu();
++
++// Called once at boot (via RegisterShipInitFunc): registers the frame hook.
++void Init();
++
++} // namespace Achievements
 diff --git a/soh/soh/Enhancements/FileSelectEnhancements.cpp b/soh/soh/Enhancements/FileSelectEnhancements.cpp
 index 8dd94e80..700c06a9 100644
 --- a/soh/soh/Enhancements/FileSelectEnhancements.cpp
@@ -290,6 +1076,85 @@ index 191ed260..24f90f87 100644
  // OTRTODO - this is awful
  
  extern "C" {
+diff --git a/soh/soh/Notification/Notification.cpp b/soh/soh/Notification/Notification.cpp
+index d26807a0..78137253 100644
+--- a/soh/soh/Notification/Notification.cpp
++++ b/soh/soh/Notification/Notification.cpp
+@@ -59,11 +59,18 @@ void Window::Draw() {
+             ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
+         }
+ 
+-        ImGui::Begin(("notification#" + std::to_string(notification.id)).c_str(), nullptr,
+-                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoFocusOnAppearing |
+-                         ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
+-                         ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoMove |
+-                         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings);
++        ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoNav |
++                                 ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoResize |
++                                 ImGuiWindowFlags_NoDocking | ImGuiWindowFlags_NoTitleBar |
++                                 ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoMove |
++                                 ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings;
++        // Toasts with an action button must accept mouse input; the rest
++        // stay click-through so they never eat game/menu clicks.
++        if (notification.actionLabel.empty()) {
++            flags |= ImGuiWindowFlags_NoInputs;
++        }
++
++        ImGui::Begin(("notification#" + std::to_string(notification.id)).c_str(), nullptr, flags);
+ 
+         ImGui::SetWindowFontScale(CVarGetFloat(CVAR_SETTING("Notifications.Size"), 1.8f)); // Make this adjustable
+ 
+@@ -105,9 +112,27 @@ void Window::Draw() {
+             ImGui::SameLine();
+             ImGui::TextColored(notification.suffixColor, "%s", notification.suffix.c_str());
+         }
++        bool actionClicked = false;
++        if (!notification.actionLabel.empty()) {
++            if (ImGui::SmallButton(notification.actionLabel.c_str())) {
++                actionClicked = true;
++            }
++        }
+ 
+         ImGui::End();
+         ImGui::PopStyleVar();
++
++        if (actionClicked) {
++            // Run the action, then dismiss the toast. Do not use the
++            // `notification` reference after this: the action may Emit a
++            // new notification and reallocate the vector.
++            auto action = notification.action;
++            notifications.erase(notifications.begin() + index);
++            --index;
++            if (action) {
++                action();
++            }
++        }
+     }
+ 
+     ImGui::PopStyleVar();
+diff --git a/soh/soh/Notification/Notification.h b/soh/soh/Notification/Notification.h
+index cb7e5063..7d33a63e 100644
+--- a/soh/soh/Notification/Notification.h
++++ b/soh/soh/Notification/Notification.h
+@@ -2,6 +2,7 @@
+ 
+ #ifdef __cplusplus
+ 
++#include <functional>
+ #include <string>
+ #include <ship/window/gui/GuiWindow.h>
+ 
+@@ -18,6 +19,10 @@ struct Options {
+     ImVec4 suffixColor = ImVec4(1.0f, 0.5f, 0.5f, 1.0f);
+     float remainingTime = 0.0f; // Seconds
+     bool mute = false;          // whether notification should make a noise
++    // Optional action button (e.g. "Ver en Logros" on achievement toasts).
++    // When set, the toast accepts mouse input so the button can be clicked.
++    std::string actionLabel = "";
++    std::function<void()> action = nullptr;
+ };
+ 
+ class Window final : public Ship::GuiWindow {
 diff --git a/soh/soh/OTRGlobals.cpp b/soh/soh/OTRGlobals.cpp
 index 1b4f62c4..6041c70c 100644
 --- a/soh/soh/OTRGlobals.cpp
@@ -414,10 +1279,42 @@ index 1b4f62c4..6041c70c 100644
  
  bool VerifyArchiveVersion(OTRVersion version) {
 diff --git a/soh/soh/SohGui/Menu.cpp b/soh/soh/SohGui/Menu.cpp
-index 642bc54a..67df8140 100644
+index 642bc54a..c2f51e0b 100644
 --- a/soh/soh/SohGui/Menu.cpp
 +++ b/soh/soh/SohGui/Menu.cpp
-@@ -801,7 +801,7 @@ void Menu::DrawElement() {
+@@ -185,7 +185,7 @@ bool ModernMenuSidebarEntry(std::string label) {
+     return pressed;
+ }
+ 
+-bool ModernMenuHeaderEntry(std::string label) {
++bool ModernMenuHeaderEntry(std::string label, bool showBadge = false) {
+     ImGuiContext& g = *GImGui;
+     ImGuiWindow* window = g.CurrentWindow;
+     ImGuiStyle& style = ImGui::GetStyle();
+@@ -204,6 +204,12 @@ bool ModernMenuHeaderEntry(std::string label) {
+                                     3.0f);
+     pos += style.FramePadding;
+     UIWidgets::RenderText(pos, label.c_str(), ImGui::FindRenderedTextEnd(label.c_str()), true);
++    if (showBadge) {
++        // Small gold dot at the top-right corner of the tab: something new
++        // (e.g. an achievement just unlocked) is waiting inside.
++        window->DrawList->AddCircleFilled(ImVec2(bb.Max.x - 4.0f, bb.Min.y + 4.0f), 4.0f,
++                                          ImGui::GetColorU32(ImVec4(1.0f, 0.85f, 0.3f, 1.0f)));
++    }
+     return pressed;
+ }
+ 
+@@ -731,7 +737,8 @@ void Menu::DrawElement() {
+         if (headerIndex != label) {
+             ImGui::PushStyleColor(ImGuiCol_Button, { 0, 0, 0, 0 });
+         }
+-        if (ModernMenuHeaderEntry(entry.label)) {
++        if (ModernMenuHeaderEntry(entry.label, entry.label == "Logros" &&
++                                                     CVarGetInteger("gAchievements.HasUnseen", 0) != 0)) {
+             if (headerSearch) {
+                 menuSearch.Clear();
+             }
+@@ -801,7 +808,7 @@ void Menu::DrawElement() {
      options2.tooltip = "Reset"
  #ifdef __APPLE__
                         " (Command-R)"
@@ -456,6 +1353,232 @@ index 986f9337..e31c416b 100644
      mSohMenu = std::make_shared<SohMenu>(CVAR_WINDOW("Menu"), "Port Menu");
      gui->SetMenu(mSohMenu);
  
+diff --git a/soh/soh/SohGui/SohMenu.cpp b/soh/soh/SohGui/SohMenu.cpp
+index ae098993..ef7c7055 100644
+--- a/soh/soh/SohGui/SohMenu.cpp
++++ b/soh/soh/SohGui/SohMenu.cpp
+@@ -87,6 +87,7 @@ void SohMenu::AddMenuElements() {
+     AddMenuSettings();
+     AddMenuEnhancements();
+     AddMenuRandomizer();
++    AddMenuAchievements();
+     AddMenuNetwork();
+     AddMenuDevTools();
+ 
+diff --git a/soh/soh/SohGui/SohMenu.h b/soh/soh/SohGui/SohMenu.h
+index feec116a..e72e021c 100644
+--- a/soh/soh/SohGui/SohMenu.h
++++ b/soh/soh/SohGui/SohMenu.h
+@@ -42,6 +42,7 @@ class SohMenu : public Ship::Menu {
+     void AddMenuEnhancements();
+     void AddMenuDevTools();
+     void AddMenuRandomizer();
++    void AddMenuAchievements();
+     void AddMenuNetwork();
+     static void UpdateLanguageMap(std::map<int32_t, const char*>& languageMap);
+ 
+diff --git a/soh/soh/SohGui/SohMenuAchievements.cpp b/soh/soh/SohGui/SohMenuAchievements.cpp
+new file mode 100644
+index 00000000..4e298cce
+--- /dev/null
++++ b/soh/soh/SohGui/SohMenuAchievements.cpp
+@@ -0,0 +1,196 @@
++#include <imgui.h>
++#include <set>
++#include <ship/Context.h>
++#include <spdlog/spdlog.h>
++
++#include "SohMenu.h"
++#include "soh/Enhancements/Achievements/Achievements.h"
++#include "soh/SohGui/UIWidgets.hpp"
++
++namespace SohGui {
++extern std::shared_ptr<SohMenu> mSohMenu;
++using namespace UIWidgets;
++
++// Hidden achievements currently showing the "reveal?" confirmation
++// (in-memory only; resets when the menu closes).
++static std::set<int> gRevealConfirm;
++
++static std::map<int32_t, const char*> achievementLanguages = {
++    { 0, "English" },
++    { 1, "Español" },
++};
++
++static const ImVec4 kColorUnlocked(0.45f, 1.0f, 0.45f, 1.0f);
++static const ImVec4 kColorLocked(0.75f, 0.75f, 0.75f, 1.0f);
++static const ImVec4 kColorDesc(0.55f, 0.55f, 0.55f, 1.0f);
++static const ImVec4 kColorPoints(1.0f, 0.85f, 0.3f, 1.0f);
++
++static void DrawAchievementRow(const Achievements::Def& def) {
++    const bool unlocked = Achievements::IsUnlocked(def.id);
++    const bool revealed = Achievements::IsRevealed(def.id);
++    const bool isHidden = def.hidden && !unlocked && !revealed;
++
++    if (isHidden) {
++        // Story achievement: shown as "???" until unlocked. Tapping it
++        // asks for confirmation (spoiler warning) before revealing it.
++        if (ImGui::Button("???")) {
++            if (gRevealConfirm.count(def.id) != 0) {
++                gRevealConfirm.erase(def.id);
++            } else {
++                gRevealConfirm.insert(def.id);
++            }
++        }
++        ImGui::SameLine();
++        ImGui::TextColored(kColorLocked, "? pts");
++        if (gRevealConfirm.count(def.id) != 0) {
++            ImGui::TextColored(kColorDesc, "%s",
++                               Achievements::Tr("This achievement is a story spoiler. Reveal it?",
++                                                "Este logro es un spoiler de la historia. ¿Revelarlo?")
++                                   .c_str());
++            if (ImGui::SmallButton(Achievements::Tr("Reveal", "Revelar").c_str())) {
++                Achievements::Reveal(def.id);
++                gRevealConfirm.erase(def.id);
++            }
++            ImGui::SameLine();
++            if (ImGui::SmallButton(Achievements::Tr("Cancel", "Cancelar").c_str())) {
++                gRevealConfirm.erase(def.id);
++            }
++        } else {
++            ImGui::TextColored(kColorDesc, "%s",
++                               Achievements::Tr("Tap to reveal (spoiler)", "Toca para revelar (spoiler)").c_str());
++        }
++        ImGui::Separator();
++        return;
++    }
++
++    const std::string name = Achievements::Title(def);
++    if (unlocked) {
++        ImGui::TextColored(kColorUnlocked, "%s", name.c_str());
++    } else {
++        ImGui::TextColored(kColorLocked, "%s", name.c_str());
++    }
++    ImGui::SameLine();
++    ImGui::TextColored(kColorPoints, "%d pts", def.points);
++    if (unlocked) {
++        ImGui::SameLine();
++        ImGui::TextColored(kColorUnlocked, "(%s)",
++                           Achievements::Tr("unlocked", "desbloqueado").c_str());
++    }
++    if (!def.implemented) {
++        ImGui::SameLine();
++        ImGui::TextColored(kColorDesc, "(%s)",
++                           Achievements::Tr("coming soon", "próximamente").c_str());
++    }
++    ImGui::TextColored(kColorDesc, "%s", Achievements::Desc(def).c_str());
++    ImGui::Separator();
++}
++
++static void DrawVanillaList(WidgetInfo&) {
++    // Opening the list marks the new unlocks as seen (clears the badge).
++    Achievements::MarkSeen();
++
++    ImGui::Text("%s",
++                Achievements::Tr(
++                    spdlog::fmt_lib::format("Achievements: {}/{}  ·  Points: {}/{}",
++                                            Achievements::CategoryUnlockedCount(Achievements::Category::Vanilla),
++                                            Achievements::CategoryTotalCount(Achievements::Category::Vanilla),
++                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Vanilla),
++                                            Achievements::CategoryPoints(Achievements::Category::Vanilla)),
++                    spdlog::fmt_lib::format("Logros: {}/{}  ·  Puntos: {}/{}",
++                                            Achievements::CategoryUnlockedCount(Achievements::Category::Vanilla),
++                                            Achievements::CategoryTotalCount(Achievements::Category::Vanilla),
++                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Vanilla),
++                                            Achievements::CategoryPoints(Achievements::Category::Vanilla)))
++                    .c_str());
++    ImGui::Separator();
++    for (const Achievements::Def& def : Achievements::GetDefs()) {
++        if (def.category != Achievements::Category::Vanilla) {
++            continue;
++        }
++        DrawAchievementRow(def);
++    }
++}
++
++static void DrawRandomizerList(WidgetInfo&) {
++    Achievements::MarkSeen();
++
++    ImGui::Text("%s",
++                Achievements::Tr(
++                    spdlog::fmt_lib::format("Achievements: {}/{}  ·  Points: {}/{}",
++                                            Achievements::CategoryUnlockedCount(Achievements::Category::Randomizer),
++                                            Achievements::CategoryTotalCount(Achievements::Category::Randomizer),
++                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Randomizer),
++                                            Achievements::CategoryPoints(Achievements::Category::Randomizer)),
++                    spdlog::fmt_lib::format("Logros: {}/{}  ·  Puntos: {}/{}",
++                                            Achievements::CategoryUnlockedCount(Achievements::Category::Randomizer),
++                                            Achievements::CategoryTotalCount(Achievements::Category::Randomizer),
++                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Randomizer),
++                                            Achievements::CategoryPoints(Achievements::Category::Randomizer)))
++                    .c_str());
++    ImGui::TextColored(kColorDesc, "%s",
++                       Achievements::Tr("Randomizer achievements arrive in a later phase. "
++                                        "This is the full list.",
++                                        "Los logros del Randomizer llegan en una fase posterior. "
++                                        "Esta es la lista completa.")
++                           .c_str());
++    ImGui::Separator();
++    for (const Achievements::Def& def : Achievements::GetDefs()) {
++        if (def.category != Achievements::Category::Randomizer) {
++            continue;
++        }
++        DrawAchievementRow(def);
++    }
++}
++
++void SohMenu::AddMenuAchievements() {
++    AddMenuEntry("Logros", CVAR_SETTING("Menu.LogrosSidebarSection"));
++    WidgetPath path;
++
++    // ---- Vanilla sidebar ----
++    path = { "Logros", "Logros", SECTION_COLUMN_1 };
++    AddSidebarEntry("Logros", path.sidebarName, 1);
++
++    AddWidget(path, "Idioma / Language", WIDGET_CVAR_COMBOBOX)
++        .CVar("gAchievements.Language")
++        .Options(ComboboxOptions().ComboMap(achievementLanguages).DefaultIndex(0));
++    AddWidget(path, "Cada recompensa se puede apagar", WIDGET_TEXT);
++
++    AddWidget(path, "Recompensas", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path,
++              "Las recompensas visuales llegan en una fase posterior; los interruptores ya están listos.",
++              WIDGET_TEXT);
++    AddWidget(path, "Slot Radiante", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.Slot")
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Título", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.Title")
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Triforce que se llena", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.Triforce")
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Brillo del logo", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.LogoGlow")
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Icono dorado del Triforce en el HUD", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.HudIcon")
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Mensaje secreto", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.SecretMessage")
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Jingle al desbloquear", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.Jingle")
++        .Options(CheckboxOptions().DefaultValue(true));
++    AddWidget(path, "Fanfarria final", WIDGET_CVAR_CHECKBOX)
++        .CVar("gAchievements.Reward.Fanfare")
++        .Options(CheckboxOptions().DefaultValue(true));
++
++    AddWidget(path, "Logros", WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Logros vainilla", WIDGET_CUSTOM).CustomFunction(DrawVanillaList);
++
++    // ---- Randomizer sidebar ----
++    path = { "Logros", "Randomizer", SECTION_COLUMN_1 };
++    AddSidebarEntry("Logros", path.sidebarName, 1);
++    AddWidget(path, "Logros del Randomizer", WIDGET_CUSTOM).CustomFunction(DrawRandomizerList);
++}
++
++} // namespace SohGui
 diff --git a/soh/soh/SohGui/SohMenuRandomizer.cpp b/soh/soh/SohGui/SohMenuRandomizer.cpp
 index 5ab82274..92e17e4d 100644
 --- a/soh/soh/SohGui/SohMenuRandomizer.cpp
