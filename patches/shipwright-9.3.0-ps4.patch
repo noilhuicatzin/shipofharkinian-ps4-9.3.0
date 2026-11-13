@@ -119,7 +119,7 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..24a5453c
+index 00000000..5fd39bca
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
 @@ -0,0 +1,695 @@
@@ -133,7 +133,7 @@ index 00000000..24a5453c
 +#include "soh/Enhancements/game-interactor/GameInteractor.h"
 +#include "soh/Notification/Notification.h"
 +#include "soh/ShipInit.hpp"
-+#include "soh/soh/cvar_prefixes.h"
++#include "soh/cvar_prefixes.h"
 +
 +extern "C" {
 +#include "functions.h"
