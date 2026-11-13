@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..5fd39bca
+index 00000000..54e3bc7b
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,695 @@
+@@ -0,0 +1,721 @@
 +#include "Achievements.h"
 +
 +#include <libultraship/bridge/consolevariablebridge.h>
@@ -155,6 +155,7 @@ index 00000000..5fd39bca
 +static const char* kRevealedPrefix = "gAchievements.Revealed.";
 +static const char* kHasUnseen = "gAchievements.HasUnseen";
 +static const char* kLanguage = "gAchievements.Language"; // 0 = English, 1 = Español
++static const char* kToastVisible = "gAchievements.ToastVisible"; // 1 while an achievement toast is on screen
 +
 +static std::string UnlockedCVar(int id) {
 +    return std::string(kUnlockedPrefix) + std::to_string(id);
@@ -716,9 +717,28 @@ index 00000000..5fd39bca
 +// ---------------------------------------------------------------------------
 +// Unlock + toast
 +// ---------------------------------------------------------------------------
++// Toast visibility, read by the PS4 touchpad shortcut (libultraship):
++// 1 while an achievement toast is on screen, 0 otherwise. A counter, not a
++// plain flag, so two toasts stacked in consecutive ticks don't clear the
++// flag early when the first one expires. The flag is set on emit and cleared
++// by Notification's onDismiss hook, which fires on the real expiry (or on
++// the action-button dismiss), never on a guessed timer.
++static int sVisibleToasts = 0;
++static void SetToastVisible(bool visible) {
++    if (visible) {
++        ++sVisibleToasts;
++    } else if (sVisibleToasts > 0) {
++        --sVisibleToasts;
++    }
++    CVarSetInteger(kToastVisible, sVisibleToasts > 0 ? 1 : 0);
++}
++
 +static void EmitUnlockToast(const std::vector<const Def*>& newlyUnlocked, bool firstEver) {
 +    const std::string viewLabel = Tr("View in Achievements", "Ver en Logros");
 +    auto openLogros = []() { OpenLogrosMenu(); };
++    // Every branch below emits exactly one toast.
++    SetToastVisible(true);
++    auto onToastDismissed = []() { SetToastVisible(false); };
 +
 +    if (firstEver) {
 +        // Special notice on the first unlock ever.
@@ -741,6 +761,7 @@ index 00000000..5fd39bca
 +            .suffix = spdlog::fmt_lib::format("+{} pts", points),
 +            .actionLabel = viewLabel,
 +            .action = openLogros,
++            .onDismiss = onToastDismissed,
 +        });
 +        return;
 +    }
@@ -754,6 +775,7 @@ index 00000000..5fd39bca
 +            .suffix = spdlog::fmt_lib::format("+{} pts", def->points),
 +            .actionLabel = viewLabel,
 +            .action = openLogros,
++            .onDismiss = onToastDismissed,
 +        });
 +        return;
 +    }
@@ -773,6 +795,7 @@ index 00000000..5fd39bca
 +        .suffix = spdlog::fmt_lib::format("+{} pts", points),
 +        .actionLabel = viewLabel,
 +        .action = openLogros,
++        .onDismiss = onToastDismissed,
 +    });
 +}
 +
@@ -812,6 +835,9 @@ index 00000000..5fd39bca
 +// Init
 +// ---------------------------------------------------------------------------
 +void Init() {
++    // A toast can outlive the session (game closed while it was up), leaving
++    // a stale 1 in the config; no toast is visible at boot.
++    CVarSetInteger(kToastVisible, 0);
 +    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(Tick);
 +}
 +
@@ -1077,7 +1103,7 @@ index 191ed260..24f90f87 100644
  
  extern "C" {
 diff --git a/soh/soh/Notification/Notification.cpp b/soh/soh/Notification/Notification.cpp
-index d26807a0..78137253 100644
+index d26807a0..564f8943 100644
 --- a/soh/soh/Notification/Notification.cpp
 +++ b/soh/soh/Notification/Notification.cpp
 @@ -59,11 +59,18 @@ void Window::Draw() {
@@ -1104,7 +1130,7 @@ index d26807a0..78137253 100644
  
          ImGui::SetWindowFontScale(CVarGetFloat(CVAR_SETTING("Notifications.Size"), 1.8f)); // Make this adjustable
  
-@@ -105,9 +112,27 @@ void Window::Draw() {
+@@ -105,9 +112,31 @@ void Window::Draw() {
              ImGui::SameLine();
              ImGui::TextColored(notification.suffixColor, "%s", notification.suffix.c_str());
          }
@@ -1123,8 +1149,12 @@ index d26807a0..78137253 100644
 +            // `notification` reference after this: the action may Emit a
 +            // new notification and reallocate the vector.
 +            auto action = notification.action;
++            auto onDismiss = notification.onDismiss;
 +            notifications.erase(notifications.begin() + index);
 +            --index;
++            if (onDismiss) {
++                onDismiss();
++            }
 +            if (action) {
 +                action();
 +            }
@@ -1132,8 +1162,21 @@ index d26807a0..78137253 100644
      }
  
      ImGui::PopStyleVar();
+@@ -123,8 +152,12 @@ void Window::UpdateElement() {
+ 
+         // remove notification if it has expired
+         if (notification.remainingTime <= 0) {
++            auto onDismiss = notification.onDismiss;
+             notifications.erase(notifications.begin() + index);
+             --index;
++            if (onDismiss) {
++                onDismiss();
++            }
+         }
+     }
+ }
 diff --git a/soh/soh/Notification/Notification.h b/soh/soh/Notification/Notification.h
-index cb7e5063..7d33a63e 100644
+index cb7e5063..176312e5 100644
 --- a/soh/soh/Notification/Notification.h
 +++ b/soh/soh/Notification/Notification.h
 @@ -2,6 +2,7 @@
@@ -1144,7 +1187,7 @@ index cb7e5063..7d33a63e 100644
  #include <string>
  #include <ship/window/gui/GuiWindow.h>
  
-@@ -18,6 +19,10 @@ struct Options {
+@@ -18,6 +19,14 @@ struct Options {
      ImVec4 suffixColor = ImVec4(1.0f, 0.5f, 0.5f, 1.0f);
      float remainingTime = 0.0f; // Seconds
      bool mute = false;          // whether notification should make a noise
@@ -1152,6 +1195,10 @@ index cb7e5063..7d33a63e 100644
 +    // When set, the toast accepts mouse input so the button can be clicked.
 +    std::string actionLabel = "";
 +    std::function<void()> action = nullptr;
++    // Optional callback invoked when the toast is removed (expired or
++    // dismissed via its action button). Achievements use it to clear the
++    // "toast visible" CVar the moment the toast is really gone.
++    std::function<void()> onDismiss = nullptr;
  };
  
  class Window final : public Ship::GuiWindow {
@@ -1379,10 +1426,10 @@ index feec116a..e72e021c 100644
  
 diff --git a/soh/soh/SohGui/SohMenuAchievements.cpp b/soh/soh/SohGui/SohMenuAchievements.cpp
 new file mode 100644
-index 00000000..4e298cce
+index 00000000..f11b817e
 --- /dev/null
 +++ b/soh/soh/SohGui/SohMenuAchievements.cpp
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,210 @@
 +#include <imgui.h>
 +#include <set>
 +#include <ship/Context.h>
@@ -1411,6 +1458,12 @@ index 00000000..4e298cce
 +static const ImVec4 kColorPoints(1.0f, 0.85f, 0.3f, 1.0f);
 +
 +static void DrawAchievementRow(const Achievements::Def& def) {
++    // One ImGui ID scope per row: without it, the 14 hidden "???" buttons
++    // (13 once one is unlocked or revealed) all share the label "???" and
++    // ImGui reports "13 visible items with conflicting ID" — and a click
++    // can land on the wrong row. This also scopes the Reveal/Cancel
++    // buttons, which share their labels across rows too.
++    ImGui::PushID(def.id);
 +    const bool unlocked = Achievements::IsUnlocked(def.id);
 +    const bool revealed = Achievements::IsRevealed(def.id);
 +    const bool isHidden = def.hidden && !unlocked && !revealed;
@@ -1445,6 +1498,7 @@ index 00000000..4e298cce
 +                               Achievements::Tr("Tap to reveal (spoiler)", "Toca para revelar (spoiler)").c_str());
 +        }
 +        ImGui::Separator();
++        ImGui::PopID();
 +        return;
 +    }
 +
@@ -1468,6 +1522,7 @@ index 00000000..4e298cce
 +    }
 +    ImGui::TextColored(kColorDesc, "%s", Achievements::Desc(def).c_str());
 +    ImGui::Separator();
++    ImGui::PopID();
 +}
 +
 +static void DrawVanillaList(WidgetInfo&) {
@@ -1535,47 +1590,53 @@ index 00000000..4e298cce
 +    path = { "Logros", "Logros", SECTION_COLUMN_1 };
 +    AddSidebarEntry("Logros", path.sidebarName, 1);
 +
-+    AddWidget(path, "Idioma / Language", WIDGET_CVAR_COMBOBOX)
++    AddWidget(path, Achievements::Tr("Language", "Idioma"), WIDGET_CVAR_COMBOBOX)
 +        .CVar("gAchievements.Language")
 +        .Options(ComboboxOptions().ComboMap(achievementLanguages).DefaultIndex(0));
-+    AddWidget(path, "Cada recompensa se puede apagar", WIDGET_TEXT);
-+
-+    AddWidget(path, "Recompensas", WIDGET_SEPARATOR_TEXT);
-+    AddWidget(path,
-+              "Las recompensas visuales llegan en una fase posterior; los interruptores ya están listos.",
++    AddWidget(path, Achievements::Tr("Each reward can be turned off", "Cada recompensa se puede apagar"),
 +              WIDGET_TEXT);
-+    AddWidget(path, "Slot Radiante", WIDGET_CVAR_CHECKBOX)
++
++    AddWidget(path, Achievements::Tr("Rewards", "Recompensas"), WIDGET_SEPARATOR_TEXT);
++    AddWidget(path,
++              Achievements::Tr("Visual rewards arrive in a later phase; the switches are already ready.",
++                               "Las recompensas visuales llegan en una fase posterior; los interruptores ya están "
++                               "listos."),
++              WIDGET_TEXT);
++    AddWidget(path, Achievements::Tr("Radiant slot", "Slot Radiante"), WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.Slot")
 +        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, "Título", WIDGET_CVAR_CHECKBOX)
++    AddWidget(path, Achievements::Tr("Title", "Título"), WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.Title")
 +        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, "Triforce que se llena", WIDGET_CVAR_CHECKBOX)
++    AddWidget(path, Achievements::Tr("Filling Triforce", "Triforce que se llena"), WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.Triforce")
 +        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, "Brillo del logo", WIDGET_CVAR_CHECKBOX)
++    AddWidget(path, Achievements::Tr("Logo glow", "Brillo del logo"), WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.LogoGlow")
 +        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, "Icono dorado del Triforce en el HUD", WIDGET_CVAR_CHECKBOX)
++    AddWidget(path, Achievements::Tr("Golden Triforce HUD icon", "Icono dorado del Triforce en el HUD"),
++              WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.HudIcon")
 +        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, "Mensaje secreto", WIDGET_CVAR_CHECKBOX)
++    AddWidget(path, Achievements::Tr("Secret message", "Mensaje secreto"), WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.SecretMessage")
 +        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, "Jingle al desbloquear", WIDGET_CVAR_CHECKBOX)
++    AddWidget(path, Achievements::Tr("Unlock jingle", "Jingle al desbloquear"), WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.Jingle")
 +        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, "Fanfarria final", WIDGET_CVAR_CHECKBOX)
++    AddWidget(path, Achievements::Tr("Final fanfare", "Fanfarria final"), WIDGET_CVAR_CHECKBOX)
 +        .CVar("gAchievements.Reward.Fanfare")
 +        .Options(CheckboxOptions().DefaultValue(true));
 +
-+    AddWidget(path, "Logros", WIDGET_SEPARATOR_TEXT);
-+    AddWidget(path, "Logros vainilla", WIDGET_CUSTOM).CustomFunction(DrawVanillaList);
++    AddWidget(path, Achievements::Tr("Achievements", "Logros"), WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, Achievements::Tr("Vanilla achievements", "Logros vainilla"), WIDGET_CUSTOM)
++        .CustomFunction(DrawVanillaList);
 +
 +    // ---- Randomizer sidebar ----
 +    path = { "Logros", "Randomizer", SECTION_COLUMN_1 };
 +    AddSidebarEntry("Logros", path.sidebarName, 1);
-+    AddWidget(path, "Logros del Randomizer", WIDGET_CUSTOM).CustomFunction(DrawRandomizerList);
++    AddWidget(path, Achievements::Tr("Randomizer achievements", "Logros del Randomizer"), WIDGET_CUSTOM)
++        .CustomFunction(DrawRandomizerList);
 +}
 +
 +} // namespace SohGui

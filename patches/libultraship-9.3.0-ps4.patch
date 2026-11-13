@@ -2389,10 +2389,10 @@ index d9f1e44..49ff456 100644
 +#endif // __PS4__
 diff --git a/src/ship/port/ps4/Ps4MousePointer.cpp b/src/ship/port/ps4/Ps4MousePointer.cpp
 new file mode 100644
-index 0000000..b2a518d
+index 0000000..400c8a7
 --- /dev/null
 +++ b/src/ship/port/ps4/Ps4MousePointer.cpp
-@@ -0,0 +1,285 @@
+@@ -0,0 +1,300 @@
 +#ifdef __PS4__
 +
 +#include "ship/port/ps4/Ps4MousePointer.h"
@@ -2403,6 +2403,7 @@ index 0000000..b2a518d
 +#include <SDL2/SDL.h>
 +#include <spdlog/spdlog.h>
 +
++#include "libultraship/bridge/consolevariablebridge.h"
 +#include "ship/port/ps4/Ps4Platform.h"
 +
 +namespace Ship {
@@ -2631,6 +2632,20 @@ index 0000000..b2a518d
 +    //    does nothing extra.
 +    const bool click = sClickPressed;
 +    if (click && !sPrevClick) {
++        // Achievement toast shortcut (Lux's choice): with the menu closed
++        // and an achievement toast on screen, open the menu straight into
++        // Logros instead of its last section. The toast's "Ver en Logros"
++        // button can't be clicked mid-game (the pointer only lives in the
++        // menu), so the touchpad is the way in. The CVar names must match
++        // shipwright's CVAR_SETTING("Menu.ActiveHeader") and
++        // CVAR_SETTING("Menu.LogrosSidebarSection"); the menu reads the
++        // header CVar fresh on every draw, so setting them before the BACK
++        // pulse lands the menu on Logros. With the menu open the press
++        // still just toggles it closed; R2 is untouched.
++        if (!menuVisible && CVarGetInteger("gAchievements.ToastVisible", 0) != 0) {
++            CVarSetString("gSettings.Menu.ActiveHeader", "Logros");
++            CVarSetString("gSettings.Menu.LogrosSidebarSection", "Logros");
++        }
 +        StartBackPulse();
 +        sLastActivityMs = nowMs;
 +        // TEMP DIAG: confirm the toggle fires on console.
