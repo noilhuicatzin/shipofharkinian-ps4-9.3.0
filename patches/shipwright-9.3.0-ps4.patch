@@ -457,7 +457,7 @@ index 986f9337..e31c416b 100644
      gui->SetMenu(mSohMenu);
  
 diff --git a/soh/soh/SohGui/SohMenuRandomizer.cpp b/soh/soh/SohGui/SohMenuRandomizer.cpp
-index 5ab82274..91ab4d51 100644
+index 5ab82274..92e17e4d 100644
 --- a/soh/soh/SohGui/SohMenuRandomizer.cpp
 +++ b/soh/soh/SohGui/SohMenuRandomizer.cpp
 @@ -1,3 +1,4 @@
@@ -465,6 +465,90 @@ index 5ab82274..91ab4d51 100644
  #include <unordered_set>
  
  #include <ship/Context.h>
+@@ -12,6 +13,13 @@
+ #include "soh/SohGui/SohGui.hpp"
+ #include "soh/SohGui/UIWidgets.hpp"
+ 
++#ifdef __PS4__
++#include <cctype>
++#include <fstream>
++
++#include <spdlog/spdlog.h>
++#endif
++
+ extern "C" {
+ #include "variables.h"
+ }
+@@ -655,6 +663,46 @@ void DrawTricksMenu(WidgetInfo& info) {
+     ImGui::PopStyleVar(1);
+ }
+ 
++#ifdef __PS4__
++// PS4 has no keyboard, so the Seed text field cannot be typed into. Lux writes
++// the seed (one line, e.g. LUXPS40001) into /data/soh/seed.txt via FTP and the
++// game uses it whenever the manual seed field is empty. Missing or empty file
++// keeps the stock behaviour: a random seed.
++static std::string ReadSeedFile() {
++    std::ifstream file(Ship::Context::GetPathRelativeToAppDirectory("seed.txt"));
++    if (!file.is_open()) {
++        return "";
++    }
++    std::string line;
++    std::getline(file, line);
++    // Keep only alphanumerics (the Seed field's FilterAlphaNum) and cap at the
++    // field's limit, so a trailing newline or stray characters can't break it.
++    std::string seed;
++    for (char c : line) {
++        if (std::isalnum(static_cast<unsigned char>(c))) {
++            seed.push_back(c);
++        }
++        if (seed.size() >= MAX_SEED_STRING_SIZE - 1) {
++            break;
++        }
++    }
++    return seed;
++}
++
++static std::string GetSeedForGeneration() {
++    std::string seed = CVarGetInteger(CVAR_RANDOMIZER_SETTING("ManualSeedEntry"), 0) ? seedString : "";
++    if (seed.empty()) {
++        seed = ReadSeedFile();
++        if (seed.empty()) {
++            SPDLOG_INFO("[PS4] [diag] rando seed: no seed in seed.txt, random seed");
++        } else {
++            SPDLOG_INFO("[PS4] [diag] rando seed from seed.txt: '{}'", seed);
++        }
++    }
++    return seed;
++}
++#endif
++
+ void SohMenu::AddMenuRandomizer() {
+     // Add Randomizer Menu
+     AddMenuEntry("Randomizer", CVAR_SETTING("Menu.RandomizerSidebarSection"));
+@@ -704,9 +752,22 @@ void SohMenu::AddMenuRandomizer() {
+             UIWidgets::PopStyleInput();
+         }
+     });
++#ifdef __PS4__
++    AddWidget(path, "PS4: write your seed in /data/soh/seed.txt (one line, e.g. LUXPS40001). "
++                    "Missing or empty file = random seed.",
++              WIDGET_TEXT)
++        .Options(TextOptions().Color(UIWidgets::Colors::Gray));
++#endif
+     AddWidget(path, "Generate Randomizer", WIDGET_BUTTON)
+         .Callback([](WidgetInfo& info) {
++#ifdef __PS4__
++            // No keyboard on PS4: the Seed field can't be typed into. Use
++            // /data/soh/seed.txt when the field is empty (random seed if the
++            // file is missing or empty).
++            GenerateRandomizer(GetSeedForGeneration());
++#else
+             GenerateRandomizer(CVarGetInteger(CVAR_RANDOMIZER_SETTING("ManualSeedEntry"), 0) ? seedString : "");
++#endif
+         })
+         .PreFunc([](WidgetInfo& info) {
+             info.options->disabled = (gSaveContext.gameMode != GAMEMODE_FILE_SELECT) || GameInteractor::IsSaveLoaded();
 diff --git a/soh/soh/SohGui/SohMenuSettings.cpp b/soh/soh/SohGui/SohMenuSettings.cpp
 index 476f99f3..9855ba26 100644
 --- a/soh/soh/SohGui/SohMenuSettings.cpp

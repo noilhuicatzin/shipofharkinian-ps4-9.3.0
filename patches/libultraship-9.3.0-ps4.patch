@@ -370,10 +370,10 @@ index 0000000..55d1552
 +#endif // __PS4__
 diff --git a/include/ship/port/ps4/Ps4MousePointer.h b/include/ship/port/ps4/Ps4MousePointer.h
 new file mode 100644
-index 0000000..f3efb55
+index 0000000..a282d66
 --- /dev/null
 +++ b/include/ship/port/ps4/Ps4MousePointer.h
-@@ -0,0 +1,112 @@
+@@ -0,0 +1,109 @@
 +#pragma once
 +#ifdef __PS4__
 +
@@ -404,10 +404,10 @@ index 0000000..f3efb55
 +//     touchpad to click shook the pointer and felt awkward). R2 DOWN on
 +//     press, UP on release, so menus, buttons and sliders behave like a
 +//     real mouse hold. Only while the menu is visible.
-+//   * Touchpad click = menu toggle only. A SHORT TAP opens the menu
-+//     instantly when it is closed; a LONG PRESS (~500 ms) closes it when it
-+//     is open. A short tap with the menu open does nothing (it no longer
-+//     clicks, so it cannot fire by accident while moving the pointer).
++//   * Touchpad click = menu toggle only (decided by Lux after the run #14
++//     console test: the tap/long-press split was awkward). Every press
++//     toggles the menu (closed -> open, open -> close). It never injects
++//     a mouse click (R2 is the click).
 +//   * The pointer only injects events while the ImGui menu is visible; with
 +//     the menu closed the touchpad click and the stick keep their current
 +//     in-game behaviour (the click still opens the menu, via a BACK pulse).
@@ -426,9 +426,6 @@ index 0000000..f3efb55
 +
 +class Ps4MousePointer {
 +  public:
-+    // Long-press threshold: holding the touchpad click this long closes the
-+    // menu when it is open. Tune from the console test.
-+    static constexpr uint32_t kLongPressMs = 500;
 +    // Right-stick deadzone, in the -32768..32767 axis scale (ImGui's
 +    // thumb_dead_zone is 8000/32767). Tune from the console test.
 +    static constexpr int16_t kStickDeadzone = 8000;
@@ -458,8 +455,8 @@ index 0000000..f3efb55
 +    // same frame. menuVisible is the menu state of the previous frame
 +    // (Gui::GetMenuOrMenubarVisible()); windowId is the main window's
 +    // SDL window id (ImGui discards mouse events whose windowID has no
-+    // viewport, so it must be the real one). Runs the touchpad tap/long-press
-+    // toggle, the R2 click edges, integrates the right stick, and pushes
++    // viewport, so it must be the real one). Runs the touchpad menu toggle,
++    // the R2 click edges, integrates the right stick, and pushes
 +    // SDL_MOUSEMOTION / SDL_MOUSEBUTTONDOWN / SDL_MOUSEBUTTONUP as needed.
 +    static void Update(bool menuVisible, uint32_t windowId);
 +
@@ -2392,10 +2389,10 @@ index d9f1e44..49ff456 100644
 +#endif // __PS4__
 diff --git a/src/ship/port/ps4/Ps4MousePointer.cpp b/src/ship/port/ps4/Ps4MousePointer.cpp
 new file mode 100644
-index 0000000..51010c2
+index 0000000..b2a518d
 --- /dev/null
 +++ b/src/ship/port/ps4/Ps4MousePointer.cpp
-@@ -0,0 +1,316 @@
+@@ -0,0 +1,285 @@
 +#ifdef __PS4__
 +
 +#include "ship/port/ps4/Ps4MousePointer.h"
@@ -2438,9 +2435,6 @@ index 0000000..51010c2
 +
 +// Click state machine.
 +bool sPrevClick = false;
-+uint32_t sPressStartMs = 0;
-+bool sPressMenuOpen = false; // menu state sampled at press-down
-+bool sPressConsumed = false; // true once the press produced its action
 +uint32_t sLastUpdateMs = 0;
 +
 +// R2 click state. A click is DOWN on the R2 press edge and UP on release,
@@ -2628,48 +2622,20 @@ index 0000000..51010c2
 +    }
 +    sPrevR2Pressed = sR2Pressed;
 +
-+    // 4. Touchpad click = menu toggle only (it no longer clicks: pressing
-+    //    the touchpad shook the pointer). The menu state is the one sampled
-+    //    at press-down: the menu cannot change under a held press except
-+    //    through this module itself.
++    // 4. Touchpad click = menu toggle only (decided by Lux after the run #14
++    //    console test: the tap/long-press split was awkward — a tap with the
++    //    menu open did nothing and closing needed a 500 ms hold). Every press
++    //    toggles the menu (closed -> open, open -> close) via a BACK pulse;
++    //    it never injects a mouse click (R2 is the click). The press edge is
++    //    enough: no tap/long-press distinction, and holding the touchpad down
++    //    does nothing extra.
 +    const bool click = sClickPressed;
 +    if (click && !sPrevClick) {
-+        // Press-down: remember when and whether the menu was open.
-+        sPressStartMs = nowMs;
-+        sPressMenuOpen = menuVisible;
-+        sPressConsumed = false;
++        StartBackPulse();
 +        sLastActivityMs = nowMs;
-+    } else if (!click && sPrevClick) {
-+        // Release.
-+        if (!sPressConsumed) {
-+            const uint32_t heldMs = nowMs - sPressStartMs;
-+            if (heldMs < kLongPressMs && !sPressMenuOpen) {
-+                // Short tap with the menu closed: open it instantly.
-+                StartBackPulse();
-+                // TEMP DIAG: confirm taps open the menu on console.
-+                SPDLOG_INFO("[PS4] [diag] pointer tap -> OPEN menu (held {} ms)", (int)heldMs);
-+                spdlog::default_logger()->flush();
-+            }
-+            // Short tap with the menu open: nothing (R2 is the click now).
-+            // Released after the long-press threshold: the long-press action
-+            // already fired at the threshold, so a release does nothing.
-+        }
-+        sPressConsumed = true;
-+    } else if (click && !sPressConsumed) {
-+        // Held: check the long-press threshold.
-+        if (nowMs - sPressStartMs >= kLongPressMs) {
-+            sPressConsumed = true;
-+            if (sPressMenuOpen) {
-+                // Long press with the menu open: close it.
-+                StartBackPulse();
-+                // TEMP DIAG: confirm long presses close the menu on console.
-+                SPDLOG_INFO("[PS4] [diag] pointer long-press -> CLOSE menu (held {} ms)",
-+                            (int)(nowMs - sPressStartMs));
-+                spdlog::default_logger()->flush();
-+            }
-+            // Long press with the menu closed: nothing (opening is a short
-+            // tap, never a hold), and the later release does nothing either.
-+        }
++        // TEMP DIAG: confirm the toggle fires on console.
++        SPDLOG_INFO("[PS4] [diag] pointer touchpad -> TOGGLE menu (was {})", menuVisible ? "open" : "closed");
++        spdlog::default_logger()->flush();
 +    }
 +    sPrevClick = click;
 +}
