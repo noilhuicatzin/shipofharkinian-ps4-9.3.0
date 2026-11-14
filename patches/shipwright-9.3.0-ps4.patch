@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..47586cb3
+index 00000000..bc703e00
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,1375 @@
+@@ -0,0 +1,1485 @@
 +#include "Achievements.h"
 +
 +#include <libultraship/bridge/consolevariablebridge.h>
@@ -150,6 +150,7 @@ index 00000000..47586cb3
 +// OTRGlobals::ScaleImGui. These come after the C declarations above so
 +// the headers see gSaveContext / SaveContext.
 +#include <imgui.h>
++#include <imgui_internal.h> // FindWindowByName / SetScrollY(window) for the direct menu scroll
 +#include <libultraship/bridge/controllerbridge.h>
 +#include "soh/OTRGlobals.h"
 +#include "soh/Enhancements/gameplaystats.h"
@@ -1290,7 +1291,7 @@ index 00000000..47586cb3
 +}
 +
 +// ---------------------------------------------------------------------------
-+// Menu zoom, scroll and input priority (run #20)
++// Menu zoom, scroll and input priority (run #20, fixed after the console test)
 +// The Logros menu is too small on a TV and its scrollbar too thin to grab
 +// with the touchpad pointer, so the menu gets: a zoom (the existing
 +// ImGui Scale setting), a wider scrollbar, and D-pad / stick scrolling
@@ -1303,10 +1304,8 @@ index 00000000..47586cb3
 +//   on each step, which is the feedback.
 +// * Scroll: the scrollbar is widened to 28 px (at 1.0x scale) while the
 +//   menu is open, and D-pad up/down (one notch per press, repeating while
-+//   held) plus the left stick (analog) scroll the list by injecting into
-+//   ImGui::GetIO().MouseWheel, which NewFrame consumes and resets, so the
-+//   injection never accumulates. It scrolls the window under the pointer,
-+//   like a real mouse wheel.
++//   held) plus the left stick (analog) scroll the "Main Menu" window
++//   directly (see below), so it works in every section with no aiming.
 +// * Input priority (Lux's principle: the menu wins over gameplay while
 +//   open): while the menu is open, game input is blocked through the
 +//   ControlDeck block API, so the D-pad cannot leak into gameplay
@@ -1314,16 +1313,54 @@ index 00000000..47586cb3
 +//   itself is unaffected: its toggle (BACK) and the R2 pointer click go
 +//   through ImGui, not ControlDeck. The block is applied once on the
 +//   menu-open transition and released once on close.
-+// * The D-pad is skipped when "Menu Controller Navigation" is enabled
-+//   (gControlNav): then ImGui's own gamepad nav already owns the D-pad
-+//   for focus movement, and this handler would double-act. On PS4 that
-+//   setting's widget is compiled out, so it is off by default.
++//
++// RUN #20 CONSOLE TEST — why the zoom and scroll did NOT work (root cause):
++// The first version of CheckMenuInput() returned early when the
++// "Menu Controller Navigation" setting (gControlNav) was on, on the
++// assumption that it is off by default on PS4. On Lux's console it is
++// ON, and that is PROVEN, not guessed:
++//   - the D-pad moves ImGui focus between the option boxes, which only
++//     happens when gamepad nav is active (the SDL backend only maps
++//     gamepad buttons to ImGui nav keys when NavEnableGamepad is set,
++//     and Gui::UpdateGamepadNavigation only sets it when gControlNav
++//     is non-zero);
++//   - the touchpad toggle works, and it requires gControlNav in TWO
++//     places: Gui::DrawMenu only toggles on ImGuiKey_GamepadBack when
++//     gControlNav is non-zero, and the backend only feeds that key
++//     when nav is enabled.
++// The checkbox to change it is compiled out on PS4, so Lux cannot turn
++// it off — and it MUST stay on, because the touchpad toggle depends on
++// it. So the early return skipped the zoom and scroll code entirely,
++// while nav kept owning the D-pad (focus movement, useless in Logros).
++// The scrollbar still widened because that line sits before the return.
++// The fix below does NOT touch gControlNav. Instead, while the menu is
++// open it turns ImGui gamepad nav OFF every frame (Tick runs after
++// DrawMenu in the frame — GameState_Draw runs before OnGameFrameUpdate
++// in GameState_Update — so this clear is the last write before the next
++// frame's NewFrame, and nav stays off even though DrawMenu's
++// UpdateGamepadNavigation re-sets the flag), and it takes over the BACK
++// close: with nav off the backend never sets ImGuiKey_GamepadBack, so
++// Gui::DrawMenu cannot close the menu on the touchpad anymore; the
++// close is read straight from the SDL controller here instead. On the
++// menu-close transition nav is re-enabled (only if gControlNav says so),
++// so the next touchpad press still opens the menu through Gui::DrawMenu.
++// The old scroll also had a second, independent flaw: it injected into
++// ImGui::GetIO().MouseWheel, which only scrolls the window UNDER THE
++// POINTER — and the pointer auto-hides after 3 s and is almost never
++// over the list. The new scroll writes the scroll target of the
++// "Main Menu" window (the outer scroller; the section content lives in
++// tall children inside it) directly, so it moves the list no matter
++// where the pointer is.
 +// ---------------------------------------------------------------------------
 +// Unique block id for the menu (per-caller ids; the input editor uses
 +// 95237929). Fits in the uint16 the bridge takes.
 +static constexpr uint16_t kMenuInputBlockId = 42424;
 +static bool sMenuInputBlocked = false;
 +static bool sMenuWasOpen = false;
++// Previous frame's BACK button state, for the rising-edge menu close.
++static bool sBackPrev = false;
++// One-time boot sanity: reset a menu scale stuck at the max (see below).
++static bool sDidZoomSanity = false;
 +// Repeat state for the D-pad, per direction group: frames held and the
 +// current direction (reset when the direction changes, so a flip steps
 +// at once instead of waiting out the old hold).
@@ -1335,6 +1372,11 @@ index 00000000..47586cb3
 +// (~0.4 s / ~0.15 s at 60 fps).
 +static constexpr int kRepeatDelayFrames = 24;
 +static constexpr int kRepeatRateFrames = 9;
++// Scroll amounts (x FontGlobalScale, so they grow with the zoom):
++// one D-pad notch moves ~3 Logros rows; the stick is analog, full
++// deflection ≈ 480 px/s (≈ 8 px/frame at 60 fps).
++static constexpr float kScrollStepPx = 120.0f;
++static constexpr float kScrollStickPxPerFrame = 8.0f;
 +
 +static bool RepeatStep(int dir, int& holdFrames, int& lastDir) {
 +    if (dir == 0) {
@@ -1352,15 +1394,38 @@ index 00000000..47586cb3
 +}
 +
 +static void CheckMenuInput() {
-+    const bool menuOpen = IsMenuOpen();
++    // One-time boot sanity: if the menu scale is stuck at the max
++    // (X-Large, 2.0x), Lux cannot see the options and the D-pad zoom is
++    // the way back — never boot into an unusable menu. Only the max is
++    // reset; 1.5x is a legitimate choice and is left alone. He can set
++    // it big again from Settings -> General -> ImGui Menu Scaling (and
++    // the D-pad zoom below now works to change it back).
++    if (!sDidZoomSanity) {
++        sDidZoomSanity = true;
++        if (CVarGetInteger(CVAR_SETTING("ImGuiScale"), 1) == 3) {
++            CVarSetInteger(CVAR_SETTING("ImGuiScale"), 1);
++            OTRGlobals::Instance->ScaleImGui();
++        }
++    }
++
++    bool menuOpen = IsMenuOpen();
 +
 +    // --- input priority: block game input while the menu is open ---
 +    if (menuOpen && !sMenuWasOpen) {
 +        ControllerBlockGameInput(kMenuInputBlockId);
 +        sMenuInputBlocked = true;
++        // The BACK pulse that just opened the menu is still active for a
++        // frame or two; seed the previous state so it does not read as a
++        // fresh press and close the menu again at once.
++        sBackPrev = PadButton(SDL_CONTROLLER_BUTTON_BACK);
 +    } else if (!menuOpen && sMenuWasOpen && sMenuInputBlocked) {
 +        ControllerUnblockGameInput(kMenuInputBlockId);
 +        sMenuInputBlocked = false;
++        // Nav back on (only if the setting says so): the touchpad opens
++        // the menu through Gui::DrawMenu, which needs the BACK key mapped.
++        if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0) {
++            ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
++        }
 +    }
 +    sMenuWasOpen = menuOpen;
 +    if (!menuOpen) {
@@ -1371,16 +1436,50 @@ index 00000000..47586cb3
 +        return;
 +    }
 +
++    // --- gamepad nav OFF while the menu is open: the D-pad and the
++    // sticks are ours now, not ImGui's focus movement. (See the header
++    // comment: this runs after DrawMenu in the frame, so the clear wins
++    // over UpdateGamepadNavigation for the next frame's NewFrame.) ---
++    ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
++
 +    // --- wider scrollbar while the menu is open ---
 +    // Set every frame: ScaleImGui()'s ScaleAllSizes rescales it on zoom
 +    // change, and this keeps it at 28 px * the current font scale.
 +    ImGui::GetStyle().ScrollbarSize = 28.0f * ImGui::GetIO().FontGlobalScale;
 +
-+    // The D-pad is ImGui's when controller navigation is on; skip it then
-+    // (on PS4 that setting is compiled out, so it is off by default).
-+    if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0) {
++    // --- BACK closes the menu (takeover) ---
++    // With nav off, the backend never sets ImGuiKey_GamepadBack, so
++    // Gui::DrawMenu cannot close the menu on the touchpad anymore; the
++    // close is read straight from the SDL controller here instead.
++    // Rising edge only: one close per press, not one per frame held.
++    const bool backDown = PadButton(SDL_CONTROLLER_BUTTON_BACK);
++    if (backDown && !sBackPrev) {
++        auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
++        if (gui != nullptr) {
++            auto menu = gui->GetMenu();
++            if (menu != nullptr) {
++                menu->ToggleVisibility();
++            }
++        }
++        sBackPrev = true;
++        // The menu just closed: release the game-input block and restore
++        // nav now instead of waiting a frame (same as the transition
++        // branch above).
++        if (sMenuInputBlocked) {
++            ControllerUnblockGameInput(kMenuInputBlockId);
++            sMenuInputBlocked = false;
++        }
++        if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0) {
++            ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
++        }
++        sMenuWasOpen = false;
++        sZoomHoldFrames = 0;
++        sZoomDir = 0;
++        sScrollHoldFrames = 0;
++        sScrollDir = 0;
 +        return;
 +    }
++    sBackPrev = backDown;
 +
 +    // --- zoom: D-pad left/right steps the existing ImGuiScale setting ---
 +    const int zoomDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ? 1 : 0) -
@@ -1401,18 +1500,29 @@ index 00000000..47586cb3
 +    }
 +
 +    // --- scroll: D-pad up/down (step + repeat) and left stick (analog) ---
++    // Applied DIRECTLY to the "Main Menu" window (the outer scroller; the
++    // section content lives in tall children inside it), instead of
++    // injecting into io.MouseWheel — the wheel only scrolls the window
++    // under the pointer, and the pointer auto-hides and is almost never
++    // over the list. Up scrolls up (Scroll.y decreases).
++    float scrollDelta = 0.0f;
++    const float fontScale = ImGui::GetIO().FontGlobalScale;
 +    const int scrollDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_UP) ? 1 : 0) -
 +                          (PadButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN) ? 1 : 0);
 +    if (RepeatStep(scrollDir, sScrollHoldFrames, sScrollDir)) {
-+        ImGui::GetIO().MouseWheel += static_cast<float>(scrollDir);
++        scrollDelta -= static_cast<float>(scrollDir) * kScrollStepPx * fontScale;
 +    }
-+    // Left stick Y: up is negative on the axis, and a positive MouseWheel
-+    // scrolls up. Deadzone ~8000/32768; full deflection ≈ 0.25 wheel
-+    // units per frame (brisk but controllable on a 112-item list).
++    // Left stick Y: up is negative on the axis. Deadzone ~8000/32768.
 +    const int16_t stickY = PadAxis(SDL_CONTROLLER_AXIS_LEFTY);
 +    if (stickY < -8000 || stickY > 8000) {
 +        const float deflection = static_cast<float>(-stickY) / 32768.0f;
-+        ImGui::GetIO().MouseWheel += deflection * 0.25f;
++        scrollDelta -= deflection * kScrollStickPxPerFrame * fontScale;
++    }
++    if (scrollDelta != 0.0f) {
++        ImGuiWindow* menuWindow = ImGui::FindWindowByName("Main Menu");
++        if (menuWindow != nullptr) {
++            ImGui::SetScrollY(menuWindow, menuWindow->Scroll.y + scrollDelta);
++        }
 +    }
 +}
 +
