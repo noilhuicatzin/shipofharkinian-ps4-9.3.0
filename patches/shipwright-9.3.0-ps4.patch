@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..bc703e00
+index 00000000..df167530
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,1485 @@
+@@ -0,0 +1,1533 @@
 +#include "Achievements.h"
 +
 +#include <libultraship/bridge/consolevariablebridge.h>
@@ -1351,6 +1351,31 @@ index 00000000..bc703e00
 +// "Main Menu" window (the outer scroller; the section content lives in
 +// tall children inside it) directly, so it moves the list no matter
 +// where the pointer is.
++// RUN #21 CONSOLE TEST (ps4_boot-12.log, 0 FATAL, 0 errors) — two partial
++// failures, both root-caused in the real code, both fixed below:
++//   1. Pointer vanished after zooming, never came back. NOT the pointer
++//      module: R2 clicks kept landing at new positions, so OnPadState /
++//      Update / PushMouseMotion all still worked — only the DRAWN cursor
++//      died. Cause: OTRGlobals::ScaleImGui() calls
++//      ImGui::GetStyle().ScaleAllSizes(), which does MouseCursorScale =
++//      ImTrunc(1.0 * factor); one zoom DOWN (factor 0.75 / 0.67) floors it
++//      to 0, and 0 * anything stays 0, so RenderMouseCursor draws a
++//      zero-size cursor forever. Fix: force MouseCursorScale = 1.0f every
++//      frame while the menu is open (next to the scrollbar line below).
++//   2. D-pad up/down never scrolled (stick did, zoom did). Cause: the
++//      Tick() nav clear runs once per game tick (20 Hz), but the GUI is
++//      drawn once per interpolated frame (~2x per tick at 40 fps on
++//      console), and Gui::UpdateGamepadNavigation() re-enables nav in
++//      every DrawMenu while the menu is open — so on the sub-frames after
++//      Tick's clear, NewFrame runs with nav ON and the D-pad feeds nav
++//      focus movement + ScrollToItem, which undoes the direct SetScrollY.
++//      Fix: clear NavEnableGamepad in SohMenu::DrawElement() too — the
++//      menu draw runs every sub-frame while visible, after
++//      UpdateGamepadNavigation, so nav is off at every NewFrame.
++//   What still worked in run #21 (untouched by these fixes): zoom with
++//   D-pad left/right, stick scroll, wide scrollbar, touchpad toggle open
++//   AND close, R2 click, L3+R3 combo, Hide button, live language, game
++//   input block while the menu is open, all 81 achievements.
 +// ---------------------------------------------------------------------------
 +// Unique block id for the menu (per-caller ids; the input editor uses
 +// 95237929). Fits in the uint16 the bridge takes.
@@ -1447,6 +1472,18 @@ index 00000000..bc703e00
 +    // change, and this keeps it at 28 px * the current font scale.
 +    ImGui::GetStyle().ScrollbarSize = 28.0f * ImGui::GetIO().FontGlobalScale;
 +
++    // --- cursor scale: ScaleImGui()'s ScaleAllSizes truncates it ---
++    // Run #21 console test: the pointer vanished after zooming and never
++    // came back, even though the pointer module kept tracking (R2 clicks
++    // still landed at new positions). Cause: ScaleAllSizes does
++    // MouseCursorScale = ImTrunc(1.0 * factor), so one zoom DOWN (2.0x ->
++    // 1.5x, factor 0.75; 1.5x -> 1.0x, factor 0.67) floors it to 0 — and
++    // 0 * anything stays 0, so RenderMouseCursor draws a zero-size cursor
++    // forever (imgui.cpp v1.91.9b: RenderMouseCursor scales by
++    // g.Style.MouseCursorScale). Force it back every frame, like the
++    // scrollbar above; the cursor is only drawn while the menu is open.
++    ImGui::GetStyle().MouseCursorScale = 1.0f;
++
 +    // --- BACK closes the menu (takeover) ---
 +    // With nav off, the backend never sets ImGuiKey_GamepadBack, so
 +    // Gui::DrawMenu cannot close the menu on the touchpad anymore; the
@@ -1496,6 +1533,9 @@ index 00000000..bc703e00
 +        if (next != current) {
 +            CVarSetInteger(CVAR_SETTING("ImGuiScale"), next);
 +            OTRGlobals::Instance->ScaleImGui();
++            // TEMP DIAG: prove the zoom step (and direction) on console.
++            SPDLOG_INFO("[PS4] [diag] menu zoom -> scale {} (dir {})", next, zoomDir);
++            spdlog::default_logger()->flush();
 +        }
 +    }
 +
@@ -1522,6 +1562,14 @@ index 00000000..bc703e00
 +        ImGuiWindow* menuWindow = ImGui::FindWindowByName("Main Menu");
 +        if (menuWindow != nullptr) {
 +            ImGui::SetScrollY(menuWindow, menuWindow->Scroll.y + scrollDelta);
++            // TEMP DIAG: first frame of a D-pad scroll press only (the
++            // stick scrolls every frame and would spam). Proves the D-pad
++            // path fires on console and where it aims the list.
++            if (scrollDir != 0 && sScrollHoldFrames == 1) {
++                SPDLOG_INFO("[PS4] [diag] menu scroll dpad dir {} -> Scroll.y target {:.0f}", scrollDir,
++                            menuWindow->Scroll.y + scrollDelta);
++                spdlog::default_logger()->flush();
++            }
 +        }
 +    }
 +}
@@ -2168,7 +2216,7 @@ index 986f9337..e31c416b 100644
      gui->SetMenu(mSohMenu);
  
 diff --git a/soh/soh/SohGui/SohMenu.cpp b/soh/soh/SohGui/SohMenu.cpp
-index ae098993..eda000f6 100644
+index ae098993..0384c9b1 100644
 --- a/soh/soh/SohGui/SohMenu.cpp
 +++ b/soh/soh/SohGui/SohMenu.cpp
 @@ -87,6 +87,7 @@ void SohMenu::AddMenuElements() {
@@ -2187,6 +2235,35 @@ index ae098993..eda000f6 100644
  }
  
  void SohMenu::Draw() {
+@@ -173,6 +175,28 @@ void SohMenu::Draw() {
+ }
+ 
+ void SohMenu::DrawElement() {
++    // Gamepad nav OFF while the menu is open, on EVERY rendered sub-frame.
++    // Run #21 console test: D-pad up/down never scrolled the list, even
++    // though CheckMenuInput() (Achievements.cpp, once per game tick) clears
++    // NavEnableGamepad. The clear loses on rate: the GUI is drawn once per
++    // interpolated frame (RunCommands() redraws the menu ~2x per game tick
++    // at 40 fps on console; ps4_boot-12.log shows ~40 StartDraws/s vs the
++    // 20 Hz game tick), and Gui::UpdateGamepadNavigation() re-enables nav
++    // in every DrawMenu while the menu is open — so on the sub-frames after
++    // Tick's clear, NewFrame runs with nav ON, the SDL backend feeds D-pad
++    // up/down as nav keys, and ImGui moves focus (language combobox, reward
++    // checkboxes, "???" buttons — the Logros rows themselves are plain
++    // text, not focusable) and scrolls the window back to the focused
++    // widget, undoing the direct SetScrollY. D-pad left/right still zoomed
++    // (no horizontal nav target in a vertical list) and the stick still
++    // scrolled (the stick is not a nav input). Clearing the flag here —
++    // this draw runs every sub-frame while the menu is visible, after
++    // UpdateGamepadNavigation — makes the clear the last write before the
++    // next frame's NewFrame, so nav is off at every NewFrame while the
++    // menu is open. Opening/closing do not need nav (touchpad BACK pulse
++    // opens via DrawMenu while the menu is closed, CheckMenuInput reads
++    // BACK straight from the controller to close), so they are untouched.
++    ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
+     if (mMenuElementsInitialized) {
+         Ship::Menu::DrawElement();
+     }
 diff --git a/soh/soh/SohGui/SohMenu.h b/soh/soh/SohGui/SohMenu.h
 index feec116a..23900a4f 100644
 --- a/soh/soh/SohGui/SohMenu.h
