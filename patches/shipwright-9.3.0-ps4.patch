@@ -119,11 +119,12 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..df167530
+index 00000000..c33cdc86
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,1533 @@
+@@ -0,0 +1,1968 @@
 +#include "Achievements.h"
++#include "AchievementsNotify.h"
 +
 +#include <libultraship/bridge/consolevariablebridge.h>
 +#include <ship/Context.h>
@@ -144,6 +145,10 @@ index 00000000..df167530
 +#include "z64save.h"
 +}
 +
++// Current PlayState (defined in z_play.c); null outside gameplay.
++// Used by the fight tracker to read the player actor and the lens flag.
++extern "C" PlayState* gPlayState;
++
 +// Run #20 additions: Randomizer achievements read the seed settings
 +// (randomizer.h) and the win timestamps (gameplaystats.h); menu zoom /
 +// scroll / input blocking need ImGui, the controller bridge and
@@ -151,6 +156,7 @@ index 00000000..df167530
 +// the headers see gSaveContext / SaveContext.
 +#include <imgui.h>
 +#include <imgui_internal.h> // FindWindowByName / SetScrollY(window) for the direct menu scroll
++#include <cstring> // strncmp / strstr for the menu scroll-window search
 +#include <libultraship/bridge/controllerbridge.h>
 +#include "soh/OTRGlobals.h"
 +#include "soh/Enhancements/gameplaystats.h"
@@ -207,11 +213,14 @@ index 00000000..df167530
 +// Registry: all 112 achievements.
 +// Vanilla ids are the RetroAchievements numbers (the 7 cuts approved by Lux
 +// leave gaps: 41, 47, 59, 82, 84, 92, 100). Randomizer ids are 1000 + n.
-+// "implemented" is true for the 68 achievements with verified detection
-+// (phase 1: 13 progression; run #20: 32 DIRECTO + 23 DIRECTO*). The rest
-+// show as locked in the Logros menu until a later phase wires them: #35 and
-+// #38 have no persistent flag (need runtime hooks), and the Randomizer set
-+// (1001-1022) is a later phase.
++// "implemented" is true for the 98 achievements with verified detection
++// (phase 1: 13 progression; run #20: 32 DIRECTO + 23 DIRECTO* + 13 easy
++// Randomizer; run #23: 15 HOOK — 13 boss-fight + #35/#38/#44/#90 — plus
++// #26 redefined as "without falling" and #1023, the 20-bribe Randomizer
++// pair of #35). The rest show as locked in the Logros menu until a later
++// phase wires them: #46 (HOOK, pending — see hook-run23-progress.md), the
++// 5 DIFÍCIL (#1, #6, #13, #95, #98) and the 9 harder Randomizer (1001,
++// 1005, 1007, 1009, 1011, 1012, 1013, 1021, 1022).
 +// ---------------------------------------------------------------------------
 +static const std::vector<Def> kDefs = {
 +    // ---- Vanilla (90, 625 pts) ----
@@ -235,9 +244,9 @@ index 00000000..df167530
 +    { 7, "Soul Brothers", "Hermanos del alma", "Receive the Spiritual Stone of Fire.",
 +      "Recibe la Piedra Espiritual del Fuego.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_GORON_RUBY, true },
-+    { 8, "Rolling Thunder", "Trueno rodante", "Roll into a wall 30 times.",
-+      "Rueda contra una pared 30 veces.", 10, Category::Vanilla, Type::Missable, false, nullptr,
-+      false },
++    { 8, "Rolling Thunder", "Trueno rodante", "Defeat Barinade without getting hit.",
++      "Vence a Barinade sin recibir daño.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      true },
 +    { 9, "Wedding Band", "Anillo de bodas", "Receive the Spiritual Stone of Water.",
 +      "Recibe la Piedra Espiritual del Agua.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_ZORA_SAPPHIRE, true },
@@ -256,8 +265,8 @@ index 00000000..df167530
 +    { 14, "Awakening", "Despertar", "Awaken the Forest Sage.",
 +      "Despierta a la Sabia del Bosque.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_FOREST, true },
-+    { 15, "Hot Hot Hot", "¡Estoy que ardo!", "Get caught on fire 5 times.",
-+      "Préndete fuego 5 veces.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 15, "Hot Hot Hot", "¡Estoy que ardo!", "Defeat Volvagia without wearing the Goron Tunic.",
++      "Vence a Volvagia sin llevar la túnica Goron.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 16, "Eternal Brothers", "Hermanos eternos", "Awaken the Fire Sage.",
 +      "Despierta al Sabio del Fuego.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_FIRE, true },
@@ -267,15 +276,15 @@ index 00000000..df167530
 +    { 18, "A Breath of Fresh Air", "Un soplo de aire fresco", "Get some air after diving.",
 +      "Respira después de bucear.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 19, "Day of the Tentacles", "El día de los tentáculos",
-+      "Get grabbed by a tentacle in the Water Temple.",
-+      "Que te agarre un tentáculo en el Templo del Agua.", 10, Category::Vanilla, Type::Missable,
-+      false, nullptr, false },
++      "Defeat Morpha without falling into the water or getting captured by its tentacle.",
++      "Vence a Morpha sin caer al agua ni que te atrape un tentáculo.", 10, Category::Vanilla, Type::Missable,
++      false, nullptr, true },
 +    { 20, "Bride to Be", "Futura esposa", "Awaken the Water Sage.",
 +      "Despierta a la Sabia del Agua.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_WATER, true },
-+    { 21, "Invisible One", "El invisible", "Get hit by an invisible enemy.",
-+      "Que te golpee un enemigo invisible.", 10, Category::Vanilla, Type::Missable, false, nullptr,
-+      false },
++    { 21, "Invisible One", "El invisible", "Defeat Bongo Bongo without using the Lens of Truth or getting trapped by his hands.",
++      "Vence a Bongo Bongo sin usar la Lente de la Verdad ni que te atrapen sus manos.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      true },
 +    { 22, "The Shadow of the Hylians", "La sombra de los hylianos", "Awaken the Shadow Sage.",
 +      "Despierta al Sabio de las Sombras.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_SHADOW, true },
@@ -287,21 +296,21 @@ index 00000000..df167530
 +    { 25, "Infamous Silver Gauntlets", "Los infames guanteletes de plata",
 +      "Obtain the Silver Gauntlets.", "Consigue los Guanteletes de Plata.", 5, Category::Vanilla,
 +      Type::None, false, nullptr, true },
-+    { 26, "Twins of Evil", "Gemelas del mal", "Get hit by both Twinrova at once.",
-+      "Que te golpeen las dos Twinrova a la vez.", 10, Category::Vanilla, Type::Missable, false,
-+      nullptr, false },
++    { 26, "Twins of Evil", "Gemelas del mal", "Defeat the Twinrova Sisters without falling from the platform.",
++      "Vence a las hermanas Twinrova sin caer de la plataforma.", 10, Category::Vanilla, Type::Missable, false,
++      nullptr, true },
 +    { 27, "Brainwashed", "Lavado de cerebro", "Awaken the Spirit Sage.",
 +      "Despierta a la Sabia del Espíritu.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_SPIRIT, true },
 +    { 28, "To the Rescue", "Al rescate", "Save a Carpenter from the Gerudo Fortress.",
 +      "Rescata a un carpintero de la Fortaleza Gerudo.", 5, Category::Vanilla, Type::None, false,
 +      nullptr, true },
-+    { 29, "King of Thieves", "Rey de los ladrones", "Become a member of the Gerudo tribe.",
-+      "Conviértete en miembro de la tribu Gerudo.", 10, Category::Vanilla, Type::None, false,
-+      nullptr, false },
-+    { 30, "My Last Breath", "Mi último aliento", "Die with a fairy in a bottle.",
-+      "Muere teniendo un hada en una botella.", 10, Category::Vanilla, Type::None, false, nullptr,
-+      false },
++    { 29, "King of Thieves", "Rey de los ladrones", "Defeat Ganondorf without falling or climbing down the platform and without using Fairies.",
++      "Vence a Ganondorf sin caer ni bajar de la plataforma y sin usar hadas.", 10, Category::Vanilla, Type::None, false,
++      nullptr, true },
++    { 30, "My Last Breath", "Mi último aliento", "Defeat Ganon with 1 heart or less remaining, without using Fairies or Bombs.",
++      "Vence a Ganon con 1 corazón o menos, sin usar hadas ni bombas.", 10, Category::Vanilla, Type::None, false, nullptr,
++      true },
 +    { 31, "Home Sweet Home", "Hogar, dulce hogar", "Banish Ganon to the void of the Evil Realm.",
 +      "Destierra a Ganon al vacío del Reino del Mal.", 25, Category::Vanilla, Type::WinCondition,
 +      true, nullptr, true },
@@ -311,16 +320,16 @@ index 00000000..df167530
 +    { 34, "Who Let the Dogs Out", "¿Quién soltó a los perros?", "Get chased by a dog.",
 +      "Que te persiga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 35, "Money Solves Everything", "El dinero lo resuelve todo",
-+      "Pay 200 rupees to open a door.", "Paga 200 rupias para abrir una puerta.", 5,
-+      Category::Vanilla, Type::Missable, false, nullptr, false },
++      "Bribe the guard in front of the gate to gain entry to the courtyard.", "Soborna al guardia de la puerta para entrar al patio.", 5,
++      Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 36, "Troublemaker", "Alborotador", "Break 10 pots in a row.",
 +      "Rompe 10 jarrones seguidos.", 5, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 37, "Super Cucco Catching", "Súper atrapa-cucco", "Catch all the Cuccos in Kakariko.",
 +      "Atrapa a todos los Cuccos de Kakariko.", 5, Category::Vanilla, Type::None, false, nullptr,
 +      true },
 +    { 38, "You Make Me Feel So Good", "Me haces sentir tan bien",
-+      "Play the Bolero of Fire for Darunia.", "Toca el Bolero de Fuego para Darunia.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, false },
++      "Obtain some nutritious milk from a healthy cow.", "Consigue leche nutritiva de una vaca sana.", 5,
++      Category::Vanilla, Type::None, false, nullptr, true },
 +    { 39, "Bullseye!!", "¡En el blanco!", "Hit the bullseye at the shooting gallery.",
 +      "Da en el blanco en la galería de tiro.", 5, Category::Vanilla, Type::None, false, nullptr,
 +      true },
@@ -332,11 +341,11 @@ index 00000000..df167530
 +      true },
 +    { 43, "Catch Me If You Can", "Atrápame si puedes", "Catch the running man.",
 +      "Atrapa al hombre que corre.", 5, Category::Vanilla, Type::None, false, nullptr, true },
-+    { 44, "Cuccos' Revenge", "La venganza de los cuccos", "Get attacked by a Cucco swarm.",
-+      "Que te ataque un enjambre de Cuccos.", 5, Category::Vanilla, Type::None, false, nullptr,
-+      false },
-+    { 45, "Roll Roll and Away", "Rueda, rueda y vete", "Roll off a cliff.",
-+      "Rueda por un acantilado.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++    { 44, "Cuccos' Revenge", "La venganza de los cuccos", "Feel the wrath of the cuccos in Kakariko Village.",
++      "Siente la ira de los cuccos en Kakariko.", 5, Category::Vanilla, Type::None, false, nullptr,
++      true },
++    { 45, "Roll Roll and Away", "Rueda, rueda y vete", "Obtain the Bomb Bag upgrade in Goron City.",
++      "Consigue la mejora de la bolsa de bombas en Goron City.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 46, "Walking on a Tightrope", "Caminando por la cuerda floja",
 +      "Cross the Gerudo Valley bridge without falling.",
 +      "Cruza el puente del Valle Gerudo sin caer.", 5, Category::Vanilla, Type::Missable, false,
@@ -428,30 +437,30 @@ index 00000000..df167530
 +      "Pesca un pez grande.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 89, "Mischievous Hero", "Héroe travieso", "Prank a guard.",
 +      "Hazle una broma a un guardia.", 5, Category::Vanilla, Type::None, false, nullptr, true },
-+    { 90, "Accomplished Angler", "Pescador consumado", "Catch the biggest fish.",
-+      "Pesca el pez más grande.", 10, Category::Vanilla, Type::None, false, nullptr, false },
++    { 90, "Accomplished Angler", "Pescador consumado", "Catch the rare Hyrule Loach.",
++      "Pesca la rara locha de Hyrule.", 10, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 91, "Cartographer", "Cartógrafo", "Get all dungeon maps.",
 +      "Consigue todos los mapas de las mazmorras.", 10, Category::Vanilla, Type::Missable, false,
 +      nullptr, true },
-+    { 93, "Race Against the Clock", "Carrera contra el reloj", "Beat a timed challenge.",
-+      "Supera un reto contrarreloj.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
-+    { 94, "Dodgeball", "Balón prisionero", "Dodge 10 attacks in a row.",
-+      "Esquiva 10 ataques seguidos.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 93, "Race Against the Clock", "Carrera contra el reloj", "Defeat Barinade in less than 1:51 with 3 hearts only.",
++      "Vence a Barinade en menos de 1:51 con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
++    { 94, "Dodgeball", "Balón prisionero", "Defeat Phantom Ganon without healing and with 3 hearts only.",
++      "Vence a Ganon Fantasma sin curarte y con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 95, "Whac-A-Mole", "Golpea al topo", "Hit 10 enemies with the Megaton Hammer.",
 +      "Golpea a 10 enemigos con el martillo Megatón.", 10, Category::Vanilla, Type::Missable,
 +      false, nullptr, false },
 +    { 96, "Tentacles of the Deep", "Tentáculos de lo profundo",
-+      "Get grabbed by a tentacle 5 times.", "Que te agarre un tentáculo 5 veces.", 10,
-+      Category::Vanilla, Type::Missable, false, nullptr, false },
-+    { 97, "Invisible Stalker", "Acechador invisible", "Defeat an invisible enemy.",
-+      "Derrota a un enemigo invisible.", 10, Category::Vanilla, Type::Missable, false, nullptr,
-+      false },
++      "Defeat Morpha without falling into water or taking damage with 3 hearts only.", "Vence a Morpha sin caer al agua ni recibir daño, con solo 3 corazones.", 10,
++      Category::Vanilla, Type::Missable, false, nullptr, true },
++    { 97, "Invisible Stalker", "Acechador invisible", "Defeat Bongo Bongo without using the Lens of Truth and without healing with 3 hearts only.",
++      "Vence a Bongo Bongo sin usar la Lente de la Verdad ni curarte, con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      true },
 +    { 98, "Double Trouble", "Doble problema", "Defeat two bosses at once.",
 +      "Derrota a dos jefes a la vez.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
-+    { 99, "Dark Lord", "Señor oscuro", "Defeat Ganon without taking damage.",
-+      "Derrota a Ganon sin recibir daño.", 25, Category::Vanilla, Type::Missable, false, nullptr,
-+      false },
-+    // ---- Randomizer (22, 375 pts) ----
++    { 99, "Dark Lord", "Señor oscuro", "Defeat Ganon without getting hit and with 3 hearts only.",
++      "Vence a Ganon sin recibir daño y con solo 3 corazones.", 25, Category::Vanilla, Type::Missable, false, nullptr,
++      true },
++    // ---- Randomizer (23, 380 pts) ----
 +    { 1001, "Not Vanilla Anymore", "No más vainilla", "Play with at least one .o2r mod active.",
 +      "Juega con al menos un mod (.o2r) activo.", 5, Category::Randomizer, Type::None, false,
 +      nullptr, false },
@@ -521,6 +530,10 @@ index 00000000..df167530
 +      nullptr, false },
 +    { 1022, "Five Seeds", "Completa 5 seeds", "Beat Ganon in 5 seeds.",
 +      "Derrota a Ganon en 5 seeds.", 25, Category::Randomizer, Type::None, false, nullptr, false },
++    { 1023, "Money Solves Everything, Twenty Times", "El dinero lo resuelve todo, veinte veces",
++      "Bribe the guard 20 times in Randomizer seeds (200 rupees in total).",
++      "Soborna al guardia 20 veces en seeds del Randomizer (200 rupias en total).", 5,
++      Category::Randomizer, Type::None, false, nullptr, true },
 +};
 +
 +// ---------------------------------------------------------------------------
@@ -695,6 +708,323 @@ index 00000000..df167530
 +}
 +
 +// ---------------------------------------------------------------------------
++// Runtime hook events + fight tracker (phase 3, run #23: the 17 HOOK
++// achievements; #46 stays pending — see the notes in the registry
++// and in EvaluateBossDefeat / hook-run23-progress.md).
++//
++// Two kinds of runtime signal, one latch:
++//   * Direct calls from actor code (Heishi2 bribe #35, cow milk #38,
++//     Hyrule Loach #90) via Achievements_NotifyHook().
++//   * GameInteractor hooks registered here: OnActorInit arms the fight
++//     tracker when a boss spawns, OnBossDefeat evaluates the fight, and
++//     OnActorInit for the attack cucco fires #44 (Cuccos' Revenge).
++// Every signal only latches sHookFired[id]; Tick() turns it into the
++// normal unlock + toast on its own path (CheckCondition reads the latch
++// first), so all unlock logic stays in one place and nothing here writes
++// a CVar or a toast from inside an actor update.
++//
++// Fight tracker design (verified against the real 9.3.0 code):
++//   * Arming: OnActorInit of the boss actor, once per spawn. Re-entering
++//     a boss room after a death re-arms (fresh flags), so a failed attempt
++//     never poisons the next one.
++//   * Baselines: snapshotted on the first frame the player is out of the
++//     intro cutscene. This skips Zelda's full heal before Ganondorf
++//     (z_boss_ganon.c) and any intro-only state; damage/heals before the
++//     baselines do not exist (actors are halted during the cutscene).
++//   * Polling: every frame (Tick()'s unthrottled part, 20 Hz logic —
++//     GameState_Update / game.c:357, R_UPDATE_RATE = 3). Health is polled,
++//     not hooked: OnPlayerHealthChange misses bottle heals (the
++//     healthAccumulator drains +4/frame straight into gSaveContext.health
++//     with no hook, z_parameter.c), so any health increase = a heal and
++//     any decrease = damage. Fairies and bombs are polled by count/ammo
++//     (a used fairy leaves its bottle; ammo only decreases by use).
++//   * Verdict: in the OnBossDefeat hook, which fires on the killing blow,
++//     before the death cutscene and before any post-fight healing. The
++//     tracker is disarmed right after the verdict.
++//   * Timer (#93, Barinade < 1:51 with 3 hearts): frames counted from the
++//     baselines to the defeat, 20 ticks/s, so 111 s = 2220 ticks. Frame
++//     counting (not GAMEPLAYSTAT_TOTAL_TIME) because the time macro freezes
++//     at the Ganon defeat timestamp once the game is complete, which would
++//     false-positive #93 on any later Barinade replay / Boss Rush.
++// ---------------------------------------------------------------------------
++static bool sHookFired[1024] = {};
++
++extern "C" void Achievements_NotifyHook(int achievementId) {
++    if (achievementId > 0 && achievementId < 1024) {
++        sHookFired[achievementId] = true;
++    }
++}
++
++// Bribe counter for #1023 (Randomizer: bribe the guard 20 times, 200
++// rupees in total — the pair of vanilla #35). Called from the same Heishi2
++// bribe site as NotifyHook(35). The counter is meta-progression (a CVar,
++// so it persists across saves and seeds) and counts ONLY bribes paid
++// while a Randomizer seed is loaded (IS_RANDO), so vanilla bribes never
++// count toward it. CheckRandomizer(1023) unlocks at 20.
++static const char* kBribeCount = "gAchievements.BribeCount";
++extern "C" void Achievements_NotifyBribe() {
++    if (!IS_RANDO) {
++        return;
++    }
++    CVarSetInteger(kBribeCount, CVarGetInteger(kBribeCount, 0) + 1);
++    SaveNow();
++}
++
++struct FightTracker {
++    bool armed = false;      // a boss actor spawned (fight may still be in intro)
++    bool baselined = false;  // baselines snapshotted (player out of cutscene)
++    int bossActorId = 0;
++    bool tookDamage = false; // health decreased at any point in the fight
++    bool healed = false;     // health increased at any point in the fight
++    bool fairyUsed = false;  // a fairy left its bottle
++    bool bombUsed = false;   // bomb or bombchu ammo decreased
++    bool grabbed = false;    // PLAYER_STATE2_GRABBED_BY_ENEMY seen (tentacle/hand)
++    bool inWater = false;    // PLAYER_STATE1_IN_WATER seen (Morpha room)
++    bool fell = false;       // player Y below the platform threshold
++    bool lensUsed = false;   // play->actorCtx.lensActive seen (Bongo Bongo)
++    int fairyCount = 0;
++    int bombAmmo = 0;
++    int bombchuAmmo = 0;
++    int lastHealth = 0;
++    int frames = 0; // logic ticks since the baselines (20 Hz; #93 < 2220)
++};
++static FightTracker sFight;
++
++static int CountFairies() {
++    int count = 0;
++    const u8* items = gSaveContext.inventory.items;
++    const u8 bottleSlots[] = { SLOT_BOTTLE_1, SLOT_BOTTLE_2, SLOT_BOTTLE_3, SLOT_BOTTLE_4 };
++    for (u8 slot : bottleSlots) {
++        if (items[slot] == ITEM_FAIRY) {
++            ++count;
++        }
++    }
++    return count;
++}
++
++static bool IsBossScene(int sceneNum) {
++    switch (sceneNum) {
++        case SCENE_JABU_JABU_BOSS:
++        case SCENE_FIRE_TEMPLE_BOSS:
++        case SCENE_WATER_TEMPLE_BOSS:
++        case SCENE_SHADOW_TEMPLE_BOSS:
++        case SCENE_SPIRIT_TEMPLE_BOSS:
++        case SCENE_GANONDORF_BOSS:
++        case SCENE_GANON_BOSS:
++            return true;
++        default:
++            return false;
++    }
++}
++
++static void ArmFight(int bossActorId) {
++    sFight = FightTracker{};
++    sFight.armed = true;
++    sFight.bossActorId = bossActorId;
++}
++
++static void DisarmFight() {
++    sFight = FightTracker{};
++}
++
++// Polls the live fight state. Called every frame from Tick()'s unthrottled
++// part (before the 30-frame throttle), so transient signals (a one-frame
++// lens flash, a healthAccumulator drain) are never missed.
++static void UpdateFightTracker() {
++    if (!sFight.armed) {
++        return;
++    }
++    PlayState* play = gPlayState;
++    if (play == nullptr || !GameInteractor::IsSaveLoaded()) {
++        DisarmFight();
++        return;
++    }
++    // Left the boss scene (warp out, etc.): the fight is over.
++    if (!IsBossScene(play->sceneNum)) {
++        DisarmFight();
++        return;
++    }
++    Player* player = GET_PLAYER(play);
++    if (player == nullptr) {
++        return;
++    }
++    // Baseline once the player is out of the intro cutscene (see the
++    // section comment: skips Zelda's full heal before Ganondorf).
++    if (!sFight.baselined) {
++        if (player->stateFlags1 & PLAYER_STATE1_IN_CUTSCENE) {
++            return;
++        }
++        sFight.baselined = true;
++        sFight.fairyCount = CountFairies();
++        sFight.bombAmmo = AMMO(ITEM_BOMB);
++        sFight.bombchuAmmo = AMMO(ITEM_BOMBCHU);
++        sFight.lastHealth = gSaveContext.health;
++        return;
++    }
++    // Health: any decrease = damage, any increase = heal. Polling every
++    // frame catches healthAccumulator drains (bottle heals) that never
++    // fire OnPlayerHealthChange.
++    const int health = gSaveContext.health;
++    if (health < sFight.lastHealth) {
++        sFight.tookDamage = true;
++    } else if (health > sFight.lastHealth) {
++        sFight.healed = true;
++    }
++    sFight.lastHealth = health;
++    // Fairies: a used fairy leaves its bottle (ITEM_FAIRY -> ITEM_BOTTLE).
++    if (const int fairies = CountFairies(); fairies < sFight.fairyCount) {
++        sFight.fairyUsed = true;
++        sFight.fairyCount = fairies;
++    }
++    // Bombs / bombchus: ammo only decreases by use.
++    if (AMMO(ITEM_BOMB) < sFight.bombAmmo || AMMO(ITEM_BOMBCHU) < sFight.bombchuAmmo) {
++        sFight.bombUsed = true;
++        sFight.bombAmmo = AMMO(ITEM_BOMB);
++        sFight.bombchuAmmo = AMMO(ITEM_BOMBCHU);
++    }
++    // Grabbed by an enemy (Morpha tentacle, Bongo Bongo hand).
++    if (player->stateFlags2 & PLAYER_STATE2_GRABBED_BY_ENEMY) {
++        sFight.grabbed = true;
++    }
++    // In water (Morpha room). Swimming is persistent, so polling catches it.
++    if (player->stateFlags1 & PLAYER_STATE1_IN_WATER) {
++        sFight.inWater = true;
++    }
++    // Lens of Truth active (Bongo Bongo). Transient — polled every frame.
++    if (play->actorCtx.lensActive) {
++        sFight.lensUsed = true;
++    }
++    // Fell off the platform. Twinrova: platforms at 230/240, floor at 35,
++    // so Y < 200 means down on the floor. Ganondorf: platforms at y=0;
++    // Y < -1 allows float noise and still catches any real fall (and a
++    // sinking platform, which also lowers Y — defensible per "sin caer").
++    const float y = player->actor.world.pos.y;
++    if (sFight.bossActorId == ACTOR_BOSS_TW) {
++        if (y < 200.0f) {
++            sFight.fell = true;
++        }
++    } else if (sFight.bossActorId == ACTOR_BOSS_GANON) {
++        if (y < -1.0f) {
++            sFight.fell = true;
++        }
++    }
++    ++sFight.frames;
++}
++
++// Evaluates the fight achievements for the boss that just died. The
++// OnBossDefeat hook fires on the killing blow (same frame), before the
++// death cutscene and before any post-fight healing, so gSaveContext.read
++// here is the state at the moment of the win. Latches sHookFired; Tick()
++// does the unlock + toast.
++static void EvaluateBossDefeat(int bossActorId) {
++    // Only judge a fight we actually tracked. (If the tracker never armed
++    // — e.g. the boss died without its OnActorInit firing — there is
++    // nothing reliable to judge, so nothing unlocks.)
++    if (!sFight.armed || sFight.bossActorId != bossActorId) {
++        return;
++    }
++    switch (bossActorId) {
++        case ACTOR_BOSS_VA: // Barinade
++            // #8 Rolling Thunder: no damage taken.
++            if (!sFight.tookDamage) {
++                sHookFired[8] = true;
++            }
++            // #93 Race Against the Clock: < 1:51 (2220 ticks at 20 Hz) with 3 hearts.
++            if (sFight.frames < 2220 && gSaveContext.healthCapacity == 0x30) {
++                sHookFired[93] = true;
++            }
++            break;
++        case ACTOR_BOSS_FD2: // Volvagia
++            // #15 Hot Hot Hot: without the Goron Tunic equipped.
++            if (CUR_EQUIP_VALUE(EQUIP_TYPE_TUNIC) != EQUIP_VALUE_TUNIC_GORON) {
++                sHookFired[15] = true;
++            }
++            break;
++        case ACTOR_BOSS_MO: // Morpha
++            // #19 Day of the Tentacles: never grabbed, never in the water.
++            if (!sFight.grabbed && !sFight.inWater) {
++                sHookFired[19] = true;
++            }
++            // #96 Tentacles of the Deep: #19 + no damage + 3 hearts.
++            if (!sFight.grabbed && !sFight.inWater && !sFight.tookDamage &&
++                gSaveContext.healthCapacity == 0x30) {
++                sHookFired[96] = true;
++            }
++            break;
++        case ACTOR_BOSS_SST: // Bongo Bongo
++            // #21 Invisible One: never used the Lens, never grabbed.
++            if (!sFight.lensUsed && !sFight.grabbed) {
++                sHookFired[21] = true;
++            }
++            // #97 Invisible Stalker: #21 + no healing + 3 hearts.
++            if (!sFight.lensUsed && !sFight.grabbed && !sFight.healed &&
++                gSaveContext.healthCapacity == 0x30) {
++                sHookFired[97] = true;
++            }
++            break;
++        case ACTOR_BOSS_TW: // Twinrova
++            // #26 Twins of Evil, redefined by Lux (2026-11-17) as
++            // "without falling from the platform" only. The "12 s revival
++            // window" does not exist in the code (the sisters are born
++            // with health 0; each reflected beam hit does
++            // otherTw->health++, and the sum >= 4 merges them), so the
++            // revive clause was dropped; the fall clause is sFight.fell
++            // (Y < 200 here, set in UpdateFightTracker).
++            if (!sFight.fell) {
++                sHookFired[26] = true;
++            }
++            break;
++        case ACTOR_BOSS_GANON: // Ganondorf
++            // #29 King of Thieves: never fell off the platform, no fairy used.
++            if (!sFight.fell && !sFight.fairyUsed) {
++                sHookFired[29] = true;
++            }
++            break;
++        case ACTOR_BOSS_GANON2: // Ganon
++            // #30 My Last Breath: <= 1 heart left, no fairy, no bombs.
++            // "No bombs" includes bombchus (they are bombs).
++            if (gSaveContext.health <= 0x10 && !sFight.fairyUsed && !sFight.bombUsed) {
++                sHookFired[30] = true;
++            }
++            // #99 Dark Lord: no damage taken, 3 hearts.
++            if (!sFight.tookDamage && gSaveContext.healthCapacity == 0x30) {
++                sHookFired[99] = true;
++            }
++            break;
++        default:
++            break;
++    }
++    DisarmFight();
++}
++
++static void RegisterFightHooks() {
++    // Arm the tracker when a boss spawns (once per spawn, including
++    // re-entry after a death). The painting phantoms (ACTOR_BOSS_FD) are
++    // deliberately NOT armed: they spawn mid-fight and would reset the
++    // tracker. Their OnBossDefeat is not listened to either.
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_VA, true, [](void*) { ArmFight(ACTOR_BOSS_VA); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_FD2, true, [](void*) { ArmFight(ACTOR_BOSS_FD2); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_MO, true, [](void*) { ArmFight(ACTOR_BOSS_MO); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_SST, true, [](void*) { ArmFight(ACTOR_BOSS_SST); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_TW, true, [](void*) { ArmFight(ACTOR_BOSS_TW); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_GANON, true, [](void*) { ArmFight(ACTOR_BOSS_GANON); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_GANON2, true, [](void*) { ArmFight(ACTOR_BOSS_GANON2); });
++    // Evaluate the fight when the boss dies (killing blow, same frame).
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_VA, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_VA); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_FD2, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_FD2); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_MO, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_MO); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_SST, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_SST); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_TW, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_TW); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_GANON); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON2, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_GANON2); });
++    // #44 Cuccos' Revenge: an attack cucco (ACTOR_EN_ATTACK_NIW) only ever
++    // spawns as the start of a swarm (z_en_niw.c), so its first init IS the
++    // swarm. Fires before the first peck; the design says "detect the
++    // swarm", so that is the intended signal.
++    COND_ID_HOOK(OnActorInit, ACTOR_EN_ATTACK_NIW, true, [](void*) { sHookFired[44] = true; });
++}
++
++// ---------------------------------------------------------------------------
 +// Detection (phase 1: the 13 progression achievements)
 +// Every condition verified against the real 9.3.0 source (see
 +// randomizer/RA-MAIN-SET.md). Quest bits: soh/include/z64item.h:85-105.
@@ -823,6 +1153,9 @@ index 00000000..df167530
 +// (1001 mods, 1005 sobreprecio, 1007 llave fuera, 1009 Boss Rush,
 +// 1011 sin morir, 1012 menos de 5 h, 1013 recompensa fuera, 1021 Boss
 +// Rush sin daño, 1022 cinco seeds): they need live tracking or mods.
++// #1023 (20 bribes) IS implemented here: its counter is meta-progression
++// (gAchievements.BribeCount, incremented by Achievements_NotifyBribe on
++// each bribe paid in a seed), checked in CheckRandomizer below.
 +// ---------------------------------------------------------------------------
 +static bool RandoContextReady() {
 +    auto ctx = Rando::Context::GetInstance();
@@ -909,6 +1242,11 @@ index 00000000..df167530
 +            return CheckAllDungeonRewards();
 +        case 1019: // All masks in a seed.
 +            return CheckAllMasks();
++        case 1023: // Money Solves Everything, Twenty Times — 20 bribes in
++            // Randomizer seeds (200 rupees in total). The counter is
++            // meta-progression (gAchievements.BribeCount, incremented by
++            // Achievements_NotifyBribe on each bribe paid in a seed).
++            return CVarGetInteger(kBribeCount, 0) >= 20;
 +        default:
 +            return false;
 +    }
@@ -1095,6 +1433,12 @@ index 00000000..df167530
 +}
 +
 +static bool CheckCondition(int id) {
++    // Runtime hook events (boss-defeat verdicts, actor hooks): latched by
++    // the hook and consumed here, so the unlock + toast go through the
++    // normal Tick() path. Tick() clears the latch when it unlocks.
++    if (id > 0 && id < 1024 && sHookFired[id]) {
++        return true;
++    }
 +    if (IsProgression(id)) {
 +        return CheckProgression(id);
 +    }
@@ -1304,7 +1648,7 @@ index 00000000..df167530
 +//   on each step, which is the feedback.
 +// * Scroll: the scrollbar is widened to 28 px (at 1.0x scale) while the
 +//   menu is open, and D-pad up/down (one notch per press, repeating while
-+//   held) plus the left stick (analog) scroll the "Main Menu" window
++//   held) plus the left stick (analog) scroll the menu's section window
 +//   directly (see below), so it works in every section with no aiming.
 +// * Input priority (Lux's principle: the menu wins over gameplay while
 +//   open): while the menu is open, game input is blocked through the
@@ -1376,6 +1720,42 @@ index 00000000..df167530
 +//   D-pad left/right, stick scroll, wide scrollbar, touchpad toggle open
 +//   AND close, R2 click, L3+R3 combo, Hide button, live language, game
 +//   input block while the menu is open, all 81 achievements.
++// RUN #22 CONSOLE TEST (ps4_boot-13.log, 0 FATAL, 0 errors) — zoom and
++// pointer FIXED, scroll still broken:
++//   Zoom works and the pointer survives zooming down: both #21 fixes
++//   confirmed on console.
++//   Scroll: neither the D-pad nor the stick moves the list anymore (in
++//   #21 the stick did). Root cause, proven from the log + the real code:
++//   CheckMenuInput() wrote SetScrollY on the "Main Menu" window, but
++//   that window is full-viewport and its content (the "Menu Block"
++//   child, ~90% of the viewport) fits, so its ScrollMax.y is 0 and the
++//   target clamps to 0 every frame. The log proves it: all 16
++//   "menu scroll dpad" lines show the target at exactly +/-180 (120 *
++//   FontGlobalScale 1.5) and never accumulating, so Scroll.y is 0 on
++//   every press. The window that actually scrolls is the section child
++//   ("<section> Settings", e.g. "Logros Settings", created in
++//   Menu::DrawElement): capped at columnHeight by size constraints
++//   while its content (the long Logros list) overflows, so it is the
++//   only "Main Menu" descendant with ScrollMax.y > 0. Fix: find that
++//   child (largest ScrollMax.y under "Main Menu/") and scroll it.
++//   Why the stick regressed #21 -> #22: in #21 the stick scrolled ONLY
++//   through Dear ImGui's own nav scrolling — NavUpdate's "Normal Manual
++//   scroll with LStick" branch calls SetScrollY on the nav window when
++//   nav is on (the SDL backend maps the stick to GamepadLStick* analog
++//   keys, imgui_impl_sdl2.cpp, and NavUpdate uses them for nav movement
++//   — so the run #21 note "the stick is not nav input" was WRONG).
++//   In #21 nav was on during most sub-frames, so ImGui scrolled the
++//   section itself; our SetScrollY on "Main Menu" was already a no-op
++//   (which is why the D-pad never scrolled: with focusable widgets
++//   present the D-pad moves focus and ScrollToItem snaps the scroll
++//   back to the focused widget near the top). In #22 the per-sub-frame
++//   nav clear in SohMenu::DrawElement() turns nav off in every
++//   sub-frame, so ImGui's own stick scroll never runs — and with our
++//   SetScrollY still aimed at the wrong window, nothing scrolls. The
++//   SetScrollY code path is identical in #21 and #22, so the stick's
++//   #21 scrolling could only have come from nav. The nav clear stays
++//   (without it the D-pad would fight the scroll through focus), the
++//   target window changes.
 +// ---------------------------------------------------------------------------
 +// Unique block id for the menu (per-caller ids; the input editor uses
 +// 95237929). Fits in the uint16 the bridge takes.
@@ -1416,6 +1796,45 @@ index 00000000..df167530
 +    ++holdFrames;
 +    return holdFrames == 1 || (holdFrames > kRepeatDelayFrames &&
 +                               (holdFrames - kRepeatDelayFrames) % kRepeatRateFrames == 0);
++}
++
++// The menu window that actually scrolls. Run #22 proved the old target
++// ("Main Menu") never scrolls: it is full-viewport and its content fits,
++// so its ScrollMax.y is 0 and SetScrollY clamps to 0 (ps4_boot-13.log:
++// Scroll.y stuck at 0 on every D-pad press). The scrollable window is
++// the section child ("<section> Settings", e.g. "Logros Settings",
++// created in Menu::DrawElement): capped at columnHeight by size
++// constraints while its content overflows, so it is the only descendant
++// of "Main Menu" with ScrollMax.y > 0. Child windows are named
++// "Parent/Child_<id>" (imgui.cpp v1.91.9b, BeginChildEx), so match the
++// "Main Menu/" prefix plus " Settings" and pick the largest ScrollMax.y
++// — this works for every section (Logros, Settings, ...) with no section
++// name hardcoded, including multi-column sections (each column child is
++// its own scroller; the largest wins). Windows only count while Active
++// (drawn this frame); Tick() runs after DrawMenu in the frame, so the
++// values are from the draw that just happened.
++static ImGuiWindow* FindMenuScrollWindow() {
++    ImGuiContext* ctx = ImGui::GetCurrentContext();
++    if (ctx == nullptr) {
++        return nullptr;
++    }
++    ImGuiWindow* best = nullptr;
++    for (ImGuiWindow* window : ctx->Windows) {
++        if (window == nullptr || !window->Active) {
++            continue;
++        }
++        if (window->Name == nullptr || strncmp(window->Name, "Main Menu/", 10) != 0 ||
++            strstr(window->Name, " Settings") == nullptr) {
++            continue;
++        }
++        if (window->ScrollMax.y <= 0.0f) {
++            continue;
++        }
++        if (best == nullptr || window->ScrollMax.y > best->ScrollMax.y) {
++            best = window;
++        }
++    }
++    return best;
 +}
 +
 +static void CheckMenuInput() {
@@ -1540,11 +1959,14 @@ index 00000000..df167530
 +    }
 +
 +    // --- scroll: D-pad up/down (step + repeat) and left stick (analog) ---
-+    // Applied DIRECTLY to the "Main Menu" window (the outer scroller; the
-+    // section content lives in tall children inside it), instead of
-+    // injecting into io.MouseWheel — the wheel only scrolls the window
-+    // under the pointer, and the pointer auto-hides and is almost never
-+    // over the list. Up scrolls up (Scroll.y decreases).
++    // Applied DIRECTLY to the menu section child that actually scrolls
++    // (see FindMenuScrollWindow), instead of injecting into
++    // io.MouseWheel — the wheel only scrolls the window UNDER THE
++    // POINTER, and the pointer auto-hides and is almost never over the
++    // list. Up scrolls up (Scroll.y decreases). Nav stays off while the
++    // menu is open (see above), so no focus move / ScrollToItem fights
++    // this: ImGui's own stick scroll is also off, which is why the stick
++    // needs this path too.
 +    float scrollDelta = 0.0f;
 +    const float fontScale = ImGui::GetIO().FontGlobalScale;
 +    const int scrollDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_UP) ? 1 : 0) -
@@ -1559,15 +1981,18 @@ index 00000000..df167530
 +        scrollDelta -= deflection * kScrollStickPxPerFrame * fontScale;
 +    }
 +    if (scrollDelta != 0.0f) {
-+        ImGuiWindow* menuWindow = ImGui::FindWindowByName("Main Menu");
-+        if (menuWindow != nullptr) {
-+            ImGui::SetScrollY(menuWindow, menuWindow->Scroll.y + scrollDelta);
++        ImGuiWindow* scrollWindow = FindMenuScrollWindow();
++        if (scrollWindow != nullptr) {
++            ImGui::SetScrollY(scrollWindow, scrollWindow->Scroll.y + scrollDelta);
 +            // TEMP DIAG: first frame of a D-pad scroll press only (the
-+            // stick scrolls every frame and would spam). Proves the D-pad
-+            // path fires on console and where it aims the list.
++            // stick scrolls every frame and would spam). Logs the window
++            // that was scrolled, its current scroll and max, and the
++            // target: on console Scroll.y must grow across presses
++            // (0 -> 180 -> 360 ...) instead of staying 0 like in run #22.
 +            if (scrollDir != 0 && sScrollHoldFrames == 1) {
-+                SPDLOG_INFO("[PS4] [diag] menu scroll dpad dir {} -> Scroll.y target {:.0f}", scrollDir,
-+                            menuWindow->Scroll.y + scrollDelta);
++                SPDLOG_INFO("[PS4] [diag] menu scroll dpad dir {} win {} Scroll.y {:.0f}/{:.0f} -> target {:.0f}",
++                            scrollDir, scrollWindow->Name, scrollWindow->Scroll.y, scrollWindow->ScrollMax.y,
++                            scrollWindow->Scroll.y + scrollDelta);
 +                spdlog::default_logger()->flush();
 +            }
 +        }
@@ -1576,11 +2001,15 @@ index 00000000..df167530
 +
 +static void Tick() {
 +    // Test-toast combo and menu input poll every frame (the unlock check
-+    // below is throttled).
++    // below is throttled). The fight tracker also polls every frame: its
++    // signals are transient (a one-frame lens flash, a healthAccumulator
++    // drain) and the 30-frame throttle would miss them.
 +    CheckTestCombo();
 +    CheckMenuInput();
-+    // Throttle: check every 30 frames (~0.5 s at 60 fps). Achievements are
-+    // meta-progression; a half-second delay is unnoticeable.
++    UpdateFightTracker();
++    // Throttle: check every 30 frames. The logic runs at 20 Hz (not 60
++    // fps — R_UPDATE_RATE = 3), so 30 frames is ~1.5 s. Achievements are
++    // meta-progression; a 1.5 s delay is unnoticeable.
 +    static int frameCounter = 0;
 +    if ((++frameCounter % 30) != 0) {
 +        return;
@@ -1591,6 +2020,11 @@ index 00000000..df167530
 +    auto unlock = [&newlyUnlocked](const Def* def) {
 +        CVarSetInteger(UnlockedCVar(def->id).c_str(), 1);
 +        newlyUnlocked.push_back(def);
++        // Consume the runtime hook latch (if any) so a fired hook cannot
++        // re-trigger after its CVar is set.
++        if (def->id > 0 && def->id < 1024) {
++            sHookFired[def->id] = false;
++        }
 +        SPDLOG_INFO("[Achievements] Unlocked {} ({} pts)", def->titleEn, def->points);
 +    };
 +
@@ -1651,6 +2085,7 @@ index 00000000..df167530
 +    // a stale 1 in the config; no toast is visible at boot.
 +    CVarSetInteger(kToastVisible, 0);
 +    GameInteractor::Instance->RegisterGameHook<GameInteractor::OnGameFrameUpdate>(Tick);
++    RegisterFightHooks();
 +}
 +
 +static RegisterShipInitFunc initFunc(Init);
@@ -1744,6 +2179,33 @@ index 00000000..7d69a421
 +void Init();
 +
 +} // namespace Achievements
+diff --git a/soh/soh/Enhancements/Achievements/AchievementsNotify.h b/soh/soh/Enhancements/Achievements/AchievementsNotify.h
+new file mode 100644
+index 00000000..4b30c591
+--- /dev/null
++++ b/soh/soh/Enhancements/Achievements/AchievementsNotify.h
+@@ -0,0 +1,21 @@
++#pragma once
++// Bridge so C actor code can report an achievement event to the C++
++// Achievements module. The call only latches a pending flag; Tick()
++// performs the actual unlock + toast on its normal path, so all unlock
++// logic stays in one place.
++//
++// Hook points (run #23, HOOK achievements):
++//   #35 Money Solves Everything — z_en_heishi2.c, after the -10 rupee bribe.
++//   #38 You Make Me Feel So Good — z_en_cow.c, when the player takes the milk.
++//   #90 Accomplished Angler — z_fishing.c, when the player keeps a Hyrule Loach.
++//   #1023 Money Solves Everything, Twenty Times — z_en_heishi2.c, same bribe
++//     call site; counts bribes paid in Randomizer seeds toward the 20-bribe
++//     total (see Achievements_NotifyBribe in Achievements.cpp).
++#ifdef __cplusplus
++extern "C" {
++#endif
++void Achievements_NotifyHook(int achievementId);
++void Achievements_NotifyBribe(void);
++#ifdef __cplusplus
++}
++#endif
 diff --git a/soh/soh/Enhancements/FileSelectEnhancements.cpp b/soh/soh/Enhancements/FileSelectEnhancements.cpp
 index 8dd94e80..700c06a9 100644
 --- a/soh/soh/Enhancements/FileSelectEnhancements.cpp
@@ -1918,10 +2380,47 @@ index 191ed260..24f90f87 100644
  
  extern "C" {
 diff --git a/soh/soh/Notification/Notification.cpp b/soh/soh/Notification/Notification.cpp
-index d26807a0..564f8943 100644
+index d26807a0..5f50610f 100644
 --- a/soh/soh/Notification/Notification.cpp
 +++ b/soh/soh/Notification/Notification.cpp
-@@ -59,11 +59,18 @@ void Window::Draw() {
+@@ -2,6 +2,7 @@
+ #include "Notification.h"
+ #include <libultraship/bridge/consolevariablebridge.h>
+ #include <ship/Context.h>
++#include <spdlog/spdlog.h>
+ 
+ extern "C" {
+ #include "functions.h"
+@@ -48,6 +49,28 @@ void Window::Draw() {
+     ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+     ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+ 
++    // Fixed toast size: the menu zoom (OTRGlobals::ScaleImGui) scales the
++    // whole style by FontGlobalScale and sets FontGlobalScale itself, so
++    // without this the toast grows with the menu zoom. Counter-scale the
++    // size-affecting style vars back to their defaults (style values are
++    // default * FontGlobalScale, because ScaleImGui scales by the zoom
++    // ratio on every change) and the font below, so the toast always
++    // renders at its default size. The Notifications.Size setting still
++    // works: it is the default size that gets preserved. The position
++    // (literal margin/padding), the 24x24 icon and the 4.0f rounding are
++    // already zoom-independent and are left alone.
++    const float toastZoom = ImGui::GetIO().FontGlobalScale;
++    const float toastInvZoom = (toastZoom > 0.0f) ? (1.0f / toastZoom) : 1.0f;
++    const ImGuiStyle& toastStyle = ImGui::GetStyle();
++    // NOTE: ImVec2 has no scalar * operator unless IMGUI_DEFINE_MATH_OPERATORS
++    // is defined, so scale the components explicitly.
++    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding,
++                        ImVec2(toastStyle.WindowPadding.x * toastInvZoom, toastStyle.WindowPadding.y * toastInvZoom));
++    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding,
++                        ImVec2(toastStyle.FramePadding.x * toastInvZoom, toastStyle.FramePadding.y * toastInvZoom));
++    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing,
++                        ImVec2(toastStyle.ItemSpacing.x * toastInvZoom, toastStyle.ItemSpacing.y * toastInvZoom));
++
+     for (size_t index = 0; index < notifications.size(); ++index) {
+         auto& notification = notifications[index];
+         int inverseIndex = ABS(static_cast<int>(index) - (static_cast<int>(notifications.size()) - 1));
+@@ -59,13 +82,34 @@ void Window::Draw() {
              ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 1.0f);
          }
  
@@ -1940,12 +2439,29 @@ index d26807a0..564f8943 100644
 +        if (notification.actionLabel.empty()) {
 +            flags |= ImGuiWindowFlags_NoInputs;
 +        }
-+
+ 
+-        ImGui::SetWindowFontScale(CVarGetFloat(CVAR_SETTING("Notifications.Size"), 1.8f)); // Make this adjustable
 +        ImGui::Begin(("notification#" + std::to_string(notification.id)).c_str(), nullptr, flags);
++
++        // Counter the menu zoom (see above): the effective font is
++        // FontBaseSize * FontWindowScale, and FontBaseSize already
++        // includes FontGlobalScale, so divide it out.
++        ImGui::SetWindowFontScale(CVarGetFloat(CVAR_SETTING("Notifications.Size"), 1.8f) * toastInvZoom);
++
++        // TEMP DIAG: once per new toast, prove the fixed-size counter-scale
++        // is active. At zoom 2.0x with the default Size 1.8 this reads
++        // fontScale 0.90; at zoom 1.0x it reads 1.80.
++        static uint32_t sLastToastDiagId = 0xFFFFFFFF;
++        if (notification.id != sLastToastDiagId) {
++            sLastToastDiagId = notification.id;
++            SPDLOG_INFO("[PS4] [diag] toast size zoom {:.2f} fontScale {:.2f}", toastZoom,
++                        CVarGetFloat(CVAR_SETTING("Notifications.Size"), 1.8f) * toastInvZoom);
++            spdlog::default_logger()->flush();
++        }
  
-         ImGui::SetWindowFontScale(CVarGetFloat(CVAR_SETTING("Notifications.Size"), 1.8f)); // Make this adjustable
- 
-@@ -105,9 +112,31 @@ void Window::Draw() {
+         ImVec2 notificationPos;
+         switch (position) {
+@@ -105,12 +149,34 @@ void Window::Draw() {
              ImGui::SameLine();
              ImGui::TextColored(notification.suffixColor, "%s", notification.suffix.c_str());
          }
@@ -1976,8 +2492,12 @@ index d26807a0..564f8943 100644
 +        }
      }
  
-     ImGui::PopStyleVar();
-@@ -123,8 +152,12 @@ void Window::UpdateElement() {
+-    ImGui::PopStyleVar();
++    ImGui::PopStyleVar(4); // WindowRounding + WindowPadding + FramePadding + ItemSpacing
+     ImGui::PopStyleColor(2);
+ }
+ 
+@@ -123,8 +189,12 @@ void Window::UpdateElement() {
  
          // remove notification if it has expired
          if (notification.remainingTime <= 0) {
@@ -3200,3 +3720,95 @@ index 98c63266..45b64b13 100644
  #else //_WIN32
  int main(int argc, char* argv[]) {
  #endif
+diff --git a/soh/src/overlays/actors/ovl_En_Cow/z_en_cow.c b/soh/src/overlays/actors/ovl_En_Cow/z_en_cow.c
+index c993d03b..64bec313 100644
+--- a/soh/src/overlays/actors/ovl_En_Cow/z_en_cow.c
++++ b/soh/src/overlays/actors/ovl_En_Cow/z_en_cow.c
+@@ -7,6 +7,7 @@
+ #include "z_en_cow.h"
+ #include "objects/object_cow/object_cow.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ 
+ #define FLAGS (ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_FRIENDLY)
+ 
+@@ -212,6 +213,11 @@ void EnCow_GiveMilkWait(EnCow* this, PlayState* play) {
+     if (Actor_HasParent(&this->actor, play)) {
+         this->actor.parent = NULL;
+         this->actionFunc = EnCow_GiveMilkEnd;
++        // Achievement #38 (You Make Me Feel So Good): the player has taken
++        // the milk from the cow (Actor_HasParent = the item was received).
++        // Cow milk is identical to bought milk in the save, so the receipt
++        // itself is the only signal. Latches a pending flag; Tick() unlocks.
++        Achievements_NotifyHook(38);
+     } else {
+         Actor_OfferGetItem(&this->actor, play, GI_MILK, 10000.0f, 100.0f);
+     }
+diff --git a/soh/src/overlays/actors/ovl_En_Heishi2/z_en_heishi2.c b/soh/src/overlays/actors/ovl_En_Heishi2/z_en_heishi2.c
+index feccdd27..77fbc563 100644
+--- a/soh/src/overlays/actors/ovl_En_Heishi2/z_en_heishi2.c
++++ b/soh/src/overlays/actors/ovl_En_Heishi2/z_en_heishi2.c
+@@ -13,6 +13,7 @@
+ #include "overlays/actors/ovl_Bg_Spot15_Saku/z_bg_spot15_saku.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ 
+ #define FLAGS (ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_FRIENDLY)
+ 
+@@ -245,6 +246,15 @@ void func_80A5344C(EnHeishi2* this, PlayState* play) {
+             case 0:
+                 if (gSaveContext.rupees >= 10) {
+                     Rupees_ChangeBy(-10);
++                    // Achievement #35 (Money Solves Everything): the bribe
++                    // leaves no persistent flag, so the payment itself is
++                    // the signal. Latches a pending flag; Tick() unlocks.
++                    Achievements_NotifyHook(35);
++                    // Achievement #1023 (Randomizer pair of #35): count
++                    // this bribe toward the 20-bribe total; the counter
++                    // only counts in Randomizer seeds (see
++                    // Achievements_NotifyBribe in Achievements.cpp).
++                    Achievements_NotifyBribe();
+                     this->actor.textId = 0x7098;
+                     this->actionFunc = func_80A53538;
+                     break;
+diff --git a/soh/src/overlays/actors/ovl_Fishing/z_fishing.c b/soh/src/overlays/actors/ovl_Fishing/z_fishing.c
+index d1702a54..3082eee9 100644
+--- a/soh/src/overlays/actors/ovl_Fishing/z_fishing.c
++++ b/soh/src/overlays/actors/ovl_Fishing/z_fishing.c
+@@ -12,6 +12,7 @@
+ 
+ #include "soh/frame_interpolation.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ #include <libultraship/bridge/consolevariablebridge.h>
+ 
+ #define FLAGS ACTOR_FLAG_UPDATE_CULLING_DISABLED
+@@ -3947,6 +3948,14 @@ void Fishing_UpdateFish(Actor* thisx, PlayState* play2) {
+                                     if (sFishOnHandLength == 0.0f) {
+                                         sFishOnHandLength = this->fishLength;
+                                         sFishOnHandIsLoach = this->isLoach;
++                                        // Achievement #90 (Accomplished Angler): the player
++                                        // kept a Hyrule Loach. sFishOnHandIsLoach is
++                                        // file-static and the save records nothing about
++                                        // the loach, so the keep itself is the only signal.
++                                        // Latches a pending flag; Tick() unlocks.
++                                        if (this->isLoach) {
++                                            Achievements_NotifyHook(90);
++                                        }
+                                         sLureCaughtWith = sLureEquipped;
+                                         Actor_Kill(&this->actor);
+                                     } else if (GameInteractor_Should(
+@@ -3961,6 +3970,12 @@ void Fishing_UpdateFish(Actor* thisx, PlayState* play2) {
+                                         s16 loachTemp = sFishOnHandIsLoach;
+                                         sFishOnHandLength = this->fishLength;
+                                         sFishOnHandIsLoach = this->isLoach;
++                                        // Achievement #90 (Accomplished Angler): same as
++                                        // above, for the exchange branch (the player swaps
++                                        // the fish in hand for a new one).
++                                        if (this->isLoach) {
++                                            Achievements_NotifyHook(90);
++                                        }
+                                         sLureCaughtWith = sLureEquipped;
+                                         this->fishLength = lengthTemp;
+                                         this->isLoach = loachTemp;
