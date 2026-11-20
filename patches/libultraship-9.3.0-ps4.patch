@@ -2206,10 +2206,10 @@ index 361a1f7..c34e337 100644
  
  } // namespace Ship
 diff --git a/src/ship/audio/SDLAudioPlayer.cpp b/src/ship/audio/SDLAudioPlayer.cpp
-index d9f1e44..49ff456 100644
+index d9f1e44..4823f59 100644
 --- a/src/ship/audio/SDLAudioPlayer.cpp
 +++ b/src/ship/audio/SDLAudioPlayer.cpp
-@@ -1,6 +1,172 @@
+@@ -1,6 +1,192 @@
  #include "ship/audio/SDLAudioPlayer.h"
  #include <spdlog/spdlog.h>
  
@@ -2240,11 +2240,19 @@ index d9f1e44..49ff456 100644
 +int32_t sPort = -1;
 +uint32_t sSourceRate = 32000;
 +
++// TEMP DIAG (run #27): count feeder underruns (blocks that needed silence)
++// to prove the 60 fps audio fix on console. Remove these three counters and
++// the log line in FeederThread below when the fix is confirmed.
++uint64_t sUnderrunBlocks = 0;
++uint64_t sUnderrunBlocksLogged = 0;
++uint64_t sFeederBlocks = 0;
++
 +void FeederThread() {
 +    int16_t block[kGranularity * 2];
 +    double position = 0.0; // read position in source frames, relative to sQueueRead
 +
 +    while (sRunning) {
++        bool blockUnderran = false; // TEMP DIAG (run #27)
 +        {
 +            std::lock_guard<std::mutex> lock(sQueueMutex);
 +            const double step = (double)sSourceRate / (double)kOutputRate;
@@ -2267,6 +2275,7 @@ index d9f1e44..49ff456 100644
 +                    // Underrun: play silence until the game catches up.
 +                    block[i * 2 + 0] = 0;
 +                    block[i * 2 + 1] = 0;
++                    blockUnderran = true; // TEMP DIAG (run #27)
 +                }
 +            }
 +
@@ -2284,6 +2293,17 @@ index d9f1e44..49ff456 100644
 +                sQueue.erase(sQueue.begin(), sQueue.begin() + (std::ptrdiff_t)sQueueRead);
 +                sQueueRead = 0;
 +            }
++        }
++
++        // TEMP DIAG (run #27): one line every 1000 blocks (~5.3 s).
++        if (blockUnderran) {
++            sUnderrunBlocks++;
++        }
++        if (++sFeederBlocks % 1000 == 0) {
++            SPDLOG_INFO("[PS4] [diag] audio feeder: underrun blocks total={} (+{} since last log)", sUnderrunBlocks,
++                        sUnderrunBlocks - sUnderrunBlocksLogged);
++            sUnderrunBlocksLogged = sUnderrunBlocks;
++            spdlog::default_logger()->flush();
 +        }
 +
 +        // Blocks until the previous block has been played.
@@ -2382,7 +2402,7 @@ index d9f1e44..49ff456 100644
  namespace Ship {
  
  SDLAudioPlayer::~SDLAudioPlayer() {
-@@ -60,3 +226,4 @@ void SDLAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
+@@ -60,3 +246,4 @@ void SDLAudioPlayer::DoPlay(const uint8_t* buf, size_t len) {
      }
  }
  } // namespace Ship
