@@ -119,16 +119,17 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..c33cdc86
+index 00000000..1520c835
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,1968 @@
+@@ -0,0 +1,2113 @@
 +#include "Achievements.h"
 +#include "AchievementsNotify.h"
 +
 +#include <libultraship/bridge/consolevariablebridge.h>
 +#include <ship/Context.h>
 +#include <ship/window/Window.h>
++#include <ship/window/gui/ConsoleWindow.h>
 +#include <spdlog/spdlog.h>
 +
 +#include <SDL2/SDL.h>
@@ -136,6 +137,7 @@ index 00000000..c33cdc86
 +#include "soh/Enhancements/game-interactor/GameInteractor.h"
 +#include "soh/Notification/Notification.h"
 +#include "soh/ShipInit.hpp"
++#include "soh/SohGui/Menu.h"
 +#include "soh/cvar_prefixes.h"
 +
 +extern "C" {
@@ -1560,11 +1562,13 @@ index 00000000..c33cdc86
 +}
 +
 +// ---------------------------------------------------------------------------
-+// Test toast combo (L3+R3): shows a test toast identical in behaviour to a
-+// real unlock toast so the touchpad shortcut can be tested on demand,
-+// without unlocking anything. Lux asked for this because the next real
-+// unlock is hours of play away, and the shortcut can only be tested while
-+// a toast is visible.
++// L3+R3 combo (run #24, Lux): what it does is a setting, CVar
++// "gAchievements.L3R3Mode" (0 = test toast, 1 = quick restart;
++// default 1 = quick restart). The setting is a visible combobox in the
++// Logros menu while testing; when testing ends it is hidden and quick
++// restart stays the default. Mode 0 is the old test-toast behaviour:
++// a test toast identical to a real unlock toast so the touchpad
++// shortcut can be tested on demand, without unlocking anything.
 +// ---------------------------------------------------------------------------
 +// The combo is read straight from the SDL game controller (same pattern as
 +// OTRGlobals.cpp). On PS4 there is exactly one: the virtual pad, whose
@@ -1615,16 +1619,50 @@ index 00000000..c33cdc86
 +    return menu != nullptr && menu->IsVisible();
 +}
 +
-+static void CheckTestCombo() {
-+    // Rising edge only: one toast per press, not one per frame while held.
++// Forward: defined with the menu-input helpers below (it needs the
++// sMenuInputBlocked statics declared there).
++static void CloseMenuNow();
++
++static void DoQuickRestart() {
++    // The in-game Reset button and Ctrl+R do exactly this: dispatch
++    // "reset" to the console window. The command (debugconsole.cpp
++    // ResetHandler) sets the next game state to TitleSetup_Init and
++    // stops the current one — a soft reset to the title screen. It is
++    // safe with no game state (returns an error, no crash). It acts on
++    // the game state, not on the menu overlay, so it works with the menu
++    // open and stuck — that is the point: the escape hatch when the
++    // touchpad will not dismiss the menu. The menu itself is closed
++    // first so the game lands on the title screen with a clean state.
++    CloseMenuNow();
++    auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
++    if (gui == nullptr) {
++        return;
++    }
++    auto consoleWin = std::reinterpret_pointer_cast<Ship::ConsoleWindow>(gui->GetGuiWindow("Console"));
++    if (consoleWin == nullptr) {
++        return;
++    }
++    consoleWin->Dispatch("reset");
++    // TEMP DIAG: proves the quick restart fired on console.
++    SPDLOG_INFO("[PS4] [diag] L3+R3 quick restart (reset dispatched)");
++    spdlog::default_logger()->flush();
++}
++
++static void CheckL3R3Combo() {
++    // Rising edge only: one action per press, not one per frame while held.
 +    const bool down = IsTestComboDown();
 +    const bool pressed = down && !sComboWasDown;
 +    sComboWasDown = down;
 +    if (!pressed) {
 +        return;
 +    }
-+    // Only in-game (a save loaded, menu closed) and only when no toast is
-+    // already up (a real toast keeps its window).
++    // Quick restart (default): works anywhere, menu open or not.
++    if (CVarGetInteger("gAchievements.L3R3Mode", 1) == 1) {
++        DoQuickRestart();
++        return;
++    }
++    // Test-toast mode: only in-game (a save loaded, menu closed) and
++    // only when no toast is already up (a real toast keeps its window).
 +    if (!GameInteractor::IsSaveLoaded() || sVisibleToasts > 0) {
 +        return;
 +    }
@@ -1773,6 +1811,8 @@ index 00000000..c33cdc86
 +static int sZoomDir = 0;
 +static int sScrollHoldFrames = 0;
 +static int sScrollDir = 0;
++static int sSectionHoldFrames = 0;
++static int sSectionDir = 0;
 +// Frames before the first repeat, then frames between repeats
 +// (~0.4 s / ~0.15 s at 60 fps).
 +static constexpr int kRepeatDelayFrames = 24;
@@ -1798,43 +1838,128 @@ index 00000000..c33cdc86
 +                               (holdFrames - kRepeatDelayFrames) % kRepeatRateFrames == 0);
 +}
 +
-+// The menu window that actually scrolls. Run #22 proved the old target
-+// ("Main Menu") never scrolls: it is full-viewport and its content fits,
-+// so its ScrollMax.y is 0 and SetScrollY clamps to 0 (ps4_boot-13.log:
-+// Scroll.y stuck at 0 on every D-pad press). The scrollable window is
-+// the section child ("<section> Settings", e.g. "Logros Settings",
-+// created in Menu::DrawElement): capped at columnHeight by size
-+// constraints while its content overflows, so it is the only descendant
-+// of "Main Menu" with ScrollMax.y > 0. Child windows are named
-+// "Parent/Child_<id>" (imgui.cpp v1.91.9b, BeginChildEx), so match the
-+// "Main Menu/" prefix plus " Settings" and pick the largest ScrollMax.y
-+// — this works for every section (Logros, Settings, ...) with no section
-+// name hardcoded, including multi-column sections (each column child is
-+// its own scroller; the largest wins). Windows only count while Active
-+// (drawn this frame); Tick() runs after DrawMenu in the frame, so the
-+// values are from the draw that just happened.
-+static ImGuiWindow* FindMenuScrollWindow() {
++// The menu windows that should scroll (run #24, Lux's rule: the section
++// under the cursor scrolls).
++//
++// Run #22 proved the old target ("Main Menu") never scrolls: it is
++// full-viewport and its content fits, so its ScrollMax.y is 0 and
++// SetScrollY clamps to 0 (ps4_boot-13.log: Scroll.y stuck at 0 on every
++// D-pad press). The scrollable window is the section child ("<section>
++// Settings", e.g. "Logros Settings", created in Menu::DrawElement):
++// capped at columnHeight by size constraints while its content overflows,
++// so it is the only descendant of "Main Menu" with ScrollMax.y > 0.
++// Child windows are named "Parent/Child_<id>" (imgui.cpp v1.91.9b,
++// BeginChildEx), so match the "Main Menu/" prefix plus " Settings".
++//
++// Which section scrolls (Lux, 2026-11-19): the one UNDER THE CURSOR.
++// The hovered window (ImGuiContext::HoveredWindow, from the last
++// NewFrame's hover test) names it; if the pointer is over a section
++// child, that section scrolls. If the pointer is over anything else
++// (the sidebar, the header, the menu background, or outside the menu —
++// e.g. hidden after 3 s idle over a non-section area), fall back to the
++// section with the largest ScrollMax.y, i.e. the active section (only
++// the active section's windows are drawn/Active).
++//
++// A section can have several column children ("<section> Settings
++// Column N"); they all scroll TOGETHER with the same delta, so the
++// section moves as one instead of one column racing ahead (run #23:
++// the log showed "General Settings Column 0" and "Logros Settings"
++// moving on different presses). Returns the windows in `out` (up to
++// `maxOut`) and the count. Windows only count while Active (drawn this
++// frame); Tick() runs after DrawMenu in the frame, so the values are
++// from the draw that just happened.
++static int FindMenuScrollWindows(ImGuiWindow** out, int maxOut) {
 +    ImGuiContext* ctx = ImGui::GetCurrentContext();
-+    if (ctx == nullptr) {
-+        return nullptr;
++    if (ctx == nullptr || out == nullptr || maxOut <= 0) {
++        return 0;
 +    }
-+    ImGuiWindow* best = nullptr;
++    // Anchor: the hovered section window, else the largest ScrollMax.
++    ImGuiWindow* anchor = nullptr;
++    ImGuiWindow* hovered = ctx->HoveredWindow;
++    if (hovered != nullptr && hovered->Active && hovered->Name != nullptr &&
++        strncmp(hovered->Name, "Main Menu/", 10) == 0 && strstr(hovered->Name, " Settings") != nullptr &&
++        hovered->ScrollMax.y > 0.0f) {
++        anchor = hovered;
++    }
++    if (anchor == nullptr) {
++        for (ImGuiWindow* window : ctx->Windows) {
++            if (window == nullptr || !window->Active) {
++                continue;
++            }
++            if (window->Name == nullptr || strncmp(window->Name, "Main Menu/", 10) != 0 ||
++                strstr(window->Name, " Settings") == nullptr) {
++                continue;
++            }
++            if (window->ScrollMax.y <= 0.0f) {
++                continue;
++            }
++            if (anchor == nullptr || window->ScrollMax.y > anchor->ScrollMax.y) {
++                anchor = window;
++            }
++        }
++    }
++    if (anchor == nullptr) {
++        return 0;
++    }
++    // Section prefix: the anchor's name up to and including " Settings".
++    // Sibling columns share it ("<section> Settings Column N_<id>").
++    const char* settingsPos = strstr(anchor->Name, " Settings");
++    if (settingsPos == nullptr) {
++        return 0;
++    }
++    const size_t prefixLen = static_cast<size_t>(settingsPos - anchor->Name) + strlen(" Settings");
++    int count = 0;
 +    for (ImGuiWindow* window : ctx->Windows) {
 +        if (window == nullptr || !window->Active) {
 +            continue;
 +        }
-+        if (window->Name == nullptr || strncmp(window->Name, "Main Menu/", 10) != 0 ||
-+            strstr(window->Name, " Settings") == nullptr) {
++        if (window->Name == nullptr || strncmp(window->Name, "Main Menu/", 10) != 0) {
++            continue;
++        }
++        if (strncmp(window->Name, anchor->Name, prefixLen) != 0) {
++            continue;
++        }
++        if (strstr(window->Name, " Settings") == nullptr) {
 +            continue;
 +        }
 +        if (window->ScrollMax.y <= 0.0f) {
 +            continue;
 +        }
-+        if (best == nullptr || window->ScrollMax.y > best->ScrollMax.y) {
-+            best = window;
++        if (count < maxOut) {
++            out[count++] = window;
 +        }
 +    }
-+    return best;
++    return count;
++}
++
++// Close the menu from code (the BACK close and the L3+R3 quick restart
++// share this): toggle visibility, release the game-input block and
++// restore nav now instead of waiting a frame. No-op when the menu is
++// not visible (ToggleVisibility toggles, so never call it blind).
++static void CloseMenuNow() {
++    auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
++    if (gui == nullptr) {
++        return;
++    }
++    auto menu = gui->GetMenu();
++    if (menu == nullptr || !menu->IsVisible()) {
++        return;
++    }
++    menu->ToggleVisibility();
++    if (sMenuInputBlocked) {
++        ControllerUnblockGameInput(kMenuInputBlockId);
++        sMenuInputBlocked = false;
++    }
++    if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0) {
++        ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
++    }
++    sMenuWasOpen = false;
++    sZoomHoldFrames = 0;
++    sZoomDir = 0;
++    sScrollHoldFrames = 0;
++    sScrollDir = 0;
++    sSectionHoldFrames = 0;
++    sSectionDir = 0;
 +}
 +
 +static void CheckMenuInput() {
@@ -1877,6 +2002,8 @@ index 00000000..c33cdc86
 +        sZoomDir = 0;
 +        sScrollHoldFrames = 0;
 +        sScrollDir = 0;
++        sSectionHoldFrames = 0;
++        sSectionDir = 0;
 +        return;
 +    }
 +
@@ -1910,29 +2037,14 @@ index 00000000..c33cdc86
 +    // Rising edge only: one close per press, not one per frame held.
 +    const bool backDown = PadButton(SDL_CONTROLLER_BUTTON_BACK);
 +    if (backDown && !sBackPrev) {
-+        auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
-+        if (gui != nullptr) {
-+            auto menu = gui->GetMenu();
-+            if (menu != nullptr) {
-+                menu->ToggleVisibility();
-+            }
-+        }
++        // TEMP DIAG: proves the BACK edge reached Tick(). Run #23: 86
++        // pulses, 0 closes — if this line is missing from the next log
++        // while the menu stays open, the pulse is still too short for
++        // the 20 Hz Tick and the libultraship pulse needs to grow.
++        SPDLOG_INFO("[PS4] [diag] menu BACK edge consumed (closing menu)");
++        spdlog::default_logger()->flush();
++        CloseMenuNow();
 +        sBackPrev = true;
-+        // The menu just closed: release the game-input block and restore
-+        // nav now instead of waiting a frame (same as the transition
-+        // branch above).
-+        if (sMenuInputBlocked) {
-+            ControllerUnblockGameInput(kMenuInputBlockId);
-+            sMenuInputBlocked = false;
-+        }
-+        if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0) {
-+            ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-+        }
-+        sMenuWasOpen = false;
-+        sZoomHoldFrames = 0;
-+        sZoomDir = 0;
-+        sScrollHoldFrames = 0;
-+        sScrollDir = 0;
 +        return;
 +    }
 +    sBackPrev = backDown;
@@ -1958,9 +2070,28 @@ index 00000000..c33cdc86
 +        }
 +    }
 +
++    // --- section switching: R1 = next section, L1 = previous ---
++    // Same input path as zoom/scroll (SDL controller via Tick, with
++    // hold-repeat). Cycles the flat (header, section) list, so R1 from
++    // the last section of one header lands on the first section of the
++    // next header. Game input is blocked while the menu is open, so
++    // R1/L1 cannot reach the game.
++    const int sectionDir = (PadButton(SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) ? 1 : 0) -
++                           (PadButton(SDL_CONTROLLER_BUTTON_LEFTSHOULDER) ? 1 : 0);
++    if (RepeatStep(sectionDir, sSectionHoldFrames, sSectionDir)) {
++        auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
++        if (gui != nullptr) {
++            auto menu = std::static_pointer_cast<Ship::Menu>(gui->GetMenu());
++            if (menu != nullptr) {
++                menu->CycleSidebarSection(sectionDir);
++            }
++        }
++    }
++
 +    // --- scroll: D-pad up/down (step + repeat) and left stick (analog) ---
-+    // Applied DIRECTLY to the menu section child that actually scrolls
-+    // (see FindMenuScrollWindow), instead of injecting into
++    // Applied DIRECTLY to the menu section child(ren) that actually scroll
++    // (see FindMenuScrollWindows: the section under the cursor, else the
++    // active section; all its columns together), instead of injecting into
 +    // io.MouseWheel — the wheel only scrolls the window UNDER THE
 +    // POINTER, and the pointer auto-hides and is almost never over the
 +    // list. Up scrolls up (Scroll.y decreases). Nav stays off while the
@@ -1981,14 +2112,28 @@ index 00000000..c33cdc86
 +        scrollDelta -= deflection * kScrollStickPxPerFrame * fontScale;
 +    }
 +    if (scrollDelta != 0.0f) {
-+        ImGuiWindow* scrollWindow = FindMenuScrollWindow();
-+        if (scrollWindow != nullptr) {
++        ImGuiWindow* scrollWindows[4];
++        const int scrollCount = FindMenuScrollWindows(scrollWindows, 4);
++        for (int i = 0; i < scrollCount; ++i) {
++            ImGuiWindow* scrollWindow = scrollWindows[i];
++            // Run #23 bug 1: while R2 is held on this window's scrollbar,
++            // ScrollbarEx re-derives Scroll.y from the (static) mouse
++            // position every frame and overwrites the SetScrollY below —
++            // the scroll looks slower / stuck while R2 is held. Release
++            // that drag when we scroll the same window with D-pad / stick:
++            // the stick/D-pad input wins over the accidental scrollbar
++            // hold. The scrollbar is the active widget exactly while
++            // held (imgui_widgets.cpp v1.91.9b: SetActiveID on grab).
++            if (ImGui::GetActiveID() == ImGui::GetWindowScrollbarID(scrollWindow, ImGuiAxis_Y)) {
++                ImGui::ClearActiveID();
++            }
 +            ImGui::SetScrollY(scrollWindow, scrollWindow->Scroll.y + scrollDelta);
 +            // TEMP DIAG: first frame of a D-pad scroll press only (the
-+            // stick scrolls every frame and would spam). Logs the window
-+            // that was scrolled, its current scroll and max, and the
-+            // target: on console Scroll.y must grow across presses
-+            // (0 -> 180 -> 360 ...) instead of staying 0 like in run #22.
++            // stick scrolls every frame and would spam). Logs every
++            // window scrolled, so the next console log proves only the
++            // active section moves: on console Scroll.y must grow across
++            // presses (0 -> 180 -> 360 ...) and no second window may
++            // move on the same press.
 +            if (scrollDir != 0 && sScrollHoldFrames == 1) {
 +                SPDLOG_INFO("[PS4] [diag] menu scroll dpad dir {} win {} Scroll.y {:.0f}/{:.0f} -> target {:.0f}",
 +                            scrollDir, scrollWindow->Name, scrollWindow->Scroll.y, scrollWindow->ScrollMax.y,
@@ -2004,7 +2149,7 @@ index 00000000..c33cdc86
 +    // below is throttled). The fight tracker also polls every frame: its
 +    // signals are transient (a one-frame lens flash, a healthAccumulator
 +    // drain) and the 30-frame throttle would miss them.
-+    CheckTestCombo();
++    CheckL3R3Combo();
 +    CheckMenuInput();
 +    UpdateFightTracker();
 +    // Throttle: check every 30 frames. The logic runs at 20 Hz (not 60
@@ -2661,10 +2806,18 @@ index 1b4f62c4..6041c70c 100644
  
  bool VerifyArchiveVersion(OTRVersion version) {
 diff --git a/soh/soh/SohGui/Menu.cpp b/soh/soh/SohGui/Menu.cpp
-index 642bc54a..c2f51e0b 100644
+index 642bc54a..f8dcb3db 100644
 --- a/soh/soh/SohGui/Menu.cpp
 +++ b/soh/soh/SohGui/Menu.cpp
-@@ -185,7 +185,7 @@ bool ModernMenuSidebarEntry(std::string label) {
+@@ -3,6 +3,7 @@
+ 
+ #include <ship/config/Config.h>
+ #include <spdlog/common.h>
++#include <spdlog/spdlog.h>
+ #include <ship/Context.h>
+ 
+ #include "Menu.h"
+@@ -185,7 +186,7 @@ bool ModernMenuSidebarEntry(std::string label) {
      return pressed;
  }
  
@@ -2673,7 +2826,7 @@ index 642bc54a..c2f51e0b 100644
      ImGuiContext& g = *GImGui;
      ImGuiWindow* window = g.CurrentWindow;
      ImGuiStyle& style = ImGui::GetStyle();
-@@ -204,6 +204,12 @@ bool ModernMenuHeaderEntry(std::string label) {
+@@ -204,6 +205,12 @@ bool ModernMenuHeaderEntry(std::string label) {
                                      3.0f);
      pos += style.FramePadding;
      UIWidgets::RenderText(pos, label.c_str(), ImGui::FindRenderedTextEnd(label.c_str()), true);
@@ -2686,7 +2839,77 @@ index 642bc54a..c2f51e0b 100644
      return pressed;
  }
  
-@@ -731,7 +737,8 @@ void Menu::DrawElement() {
+@@ -289,6 +296,69 @@ void Menu::AddMenuEntry(std::string entryName, const char* entryCvar) {
+     menuOrder.push_back(entryName);
+ }
+ 
++// R1/L1 section switching (run #24, Lux): cycle the flat list of
++// (header, section) pairs in menu order, wrapping around. Activates the
++// target exactly like tapping its sidebar tab: the header CVar and the
++// target header's sidebar CVar are set and saved; DrawElement reads them
++// fresh on the next draw. Called from Achievements::CheckMenuInput with
++// the menu open (game input is blocked then, so R1/L1 cannot leak into
++// gameplay). No-op when there is one section or none, or when the current
++// position cannot be found.
++void Menu::CycleSidebarSection(int dir) {
++    if (dir == 0 || menuOrder.empty()) {
++        return;
++    }
++    const char* headerCvar = CVAR_SETTING("Menu.ActiveHeader");
++    const std::string headerIndex = CVarGetString(headerCvar, "Settings");
++    int total = 0;
++    int current = -1;
++    for (const std::string& header : menuOrder) {
++        auto it = menuEntries.find(header);
++        if (it == menuEntries.end()) {
++            continue;
++        }
++        const MainMenuEntry& entry = it->second;
++        if (header == headerIndex) {
++            const std::string sectionIndex = CVarGetString(entry.sidebarCvar, "");
++            int sectionPos = 0;
++            for (int i = 0; i < static_cast<int>(entry.sidebarOrder.size()); ++i) {
++                if (entry.sidebarOrder[i] == sectionIndex) {
++                    sectionPos = i;
++                    break;
++                }
++            }
++            current = total + sectionPos;
++        }
++        total += static_cast<int>(entry.sidebarOrder.size());
++    }
++    if (total <= 1 || current < 0) {
++        return;
++    }
++    int next = (current + dir) % total;
++    if (next < 0) {
++        next += total;
++    }
++    int remaining = next;
++    for (const std::string& header : menuOrder) {
++        auto it = menuEntries.find(header);
++        if (it == menuEntries.end()) {
++            continue;
++        }
++        const MainMenuEntry& entry = it->second;
++        const int count = static_cast<int>(entry.sidebarOrder.size());
++        if (remaining < count) {
++            CVarSetString(headerCvar, header.c_str());
++            CVarSetString(entry.sidebarCvar, entry.sidebarOrder[remaining].c_str());
++            CVarSave();
++            // TEMP DIAG: proves the section switch on console.
++            SPDLOG_INFO("[PS4] [diag] menu section -> {} / {}", header, entry.sidebarOrder[remaining]);
++            spdlog::default_logger()->flush();
++            return;
++        }
++        remaining -= count;
++    }
++}
++
+ void Menu::AddSearchWidget(SearchWidget widget) {
+     extraSearchWidgets.push_back(widget);
+ }
+@@ -731,7 +801,8 @@ void Menu::DrawElement() {
          if (headerIndex != label) {
              ImGui::PushStyleColor(ImGuiCol_Button, { 0, 0, 0, 0 });
          }
@@ -2696,7 +2919,7 @@ index 642bc54a..c2f51e0b 100644
              if (headerSearch) {
                  menuSearch.Clear();
              }
-@@ -801,7 +808,7 @@ void Menu::DrawElement() {
+@@ -801,7 +872,7 @@ void Menu::DrawElement() {
      options2.tooltip = "Reset"
  #ifdef __APPLE__
                         " (Command-R)"
@@ -2705,6 +2928,18 @@ index 642bc54a..c2f51e0b 100644
                         " (Ctrl+R)"
  #else
                         ""
+diff --git a/soh/soh/SohGui/Menu.h b/soh/soh/SohGui/Menu.h
+index 7a3afdf6..fc1c64d4 100644
+--- a/soh/soh/SohGui/Menu.h
++++ b/soh/soh/SohGui/Menu.h
+@@ -24,6 +24,7 @@ class Menu : public GuiWindow {
+     void UpdateAudioBackendObjects();
+     void UpdateWindowBackendObjects();
+     bool IsMenuPopped();
++    void CycleSidebarSection(int dir);
+     UIWidgets::Colors GetMenuThemeColor();
+ 
+     void MenuDrawItem(WidgetInfo& widget, UIWidgets::Colors menuThemeIndex);
 diff --git a/soh/soh/SohGui/ResolutionEditor.cpp b/soh/soh/SohGui/ResolutionEditor.cpp
 index 5a923156..7d113daa 100644
 --- a/soh/soh/SohGui/ResolutionEditor.cpp
@@ -2799,10 +3034,10 @@ index feec116a..23900a4f 100644
  
 diff --git a/soh/soh/SohGui/SohMenuAchievements.cpp b/soh/soh/SohGui/SohMenuAchievements.cpp
 new file mode 100644
-index 00000000..ca7eea1e
+index 00000000..13400897
 --- /dev/null
 +++ b/soh/soh/SohGui/SohMenuAchievements.cpp
-@@ -0,0 +1,286 @@
+@@ -0,0 +1,295 @@
 +#include <imgui.h>
 +#include <set>
 +#include <ship/Context.h>
@@ -2823,6 +3058,12 @@ index 00000000..ca7eea1e
 +static std::map<int32_t, const char*> achievementLanguages = {
 +    { 0, "English" },
 +    { 1, "Español" },
++};
++
++// L3+R3 mode (run #24, Lux): 0 = test toast, 1 = quick restart (default).
++static std::map<int32_t, const char*> l3r3Modes = {
++    { 0, "Aviso de prueba" },
++    { 1, "Reinicio rápido" },
 +};
 +
 +static const ImVec4 kColorUnlocked(0.45f, 1.0f, 0.45f, 1.0f);
@@ -2977,6 +3218,9 @@ index 00000000..ca7eea1e
 +    AddWidget(path, Achievements::Tr("Language", "Idioma"), WIDGET_CVAR_COMBOBOX)
 +        .CVar("gAchievements.Language")
 +        .Options(ComboboxOptions().ComboMap(achievementLanguages).DefaultIndex(0));
++    AddWidget(path, Achievements::Tr("L3+R3 action", "Acción de L3+R3"), WIDGET_CVAR_COMBOBOX)
++        .CVar("gAchievements.L3R3Mode")
++        .Options(ComboboxOptions().ComboMap(l3r3Modes).DefaultIndex(1));
 +    AddWidget(path, Achievements::Tr("Each reward can be turned off", "Cada recompensa se puede apagar"),
 +              WIDGET_TEXT);
 +

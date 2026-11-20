@@ -2389,10 +2389,10 @@ index d9f1e44..49ff456 100644
 +#endif // __PS4__
 diff --git a/src/ship/port/ps4/Ps4MousePointer.cpp b/src/ship/port/ps4/Ps4MousePointer.cpp
 new file mode 100644
-index 0000000..400c8a7
+index 0000000..5133e12
 --- /dev/null
 +++ b/src/ship/port/ps4/Ps4MousePointer.cpp
-@@ -0,0 +1,300 @@
+@@ -0,0 +1,307 @@
 +#ifdef __PS4__
 +
 +#include "ship/port/ps4/Ps4MousePointer.h"
@@ -2491,7 +2491,14 @@ index 0000000..400c8a7
 +
 +void StartBackPulse() {
 +    sBackDesired = true;
-+    sBackPulseFrames = 2; // pressed for two ImGui frames, then released
++    // Four rendered frames (~100 ms at 40 fps on console, ~67 ms at 60):
++    // the close is consumed by Achievements::Tick() at 20 Hz (50 ms), so
++    // a 2-frame pulse (~33-50 ms) can fall entirely between two Tick
++    // samples — run #23 logged 86 pulses and 0 closes. Four frames
++    // always overlaps at least one Tick sample, and is still short
++    // enough that two quick successive taps produce separate rising
++    // edges (Lux's fastest taps in ps4_boot-13.log are ~150 ms apart).
++    sBackPulseFrames = 4;
 +    // TEMP DIAG: confirm the menu toggle fires on console.
 +    SPDLOG_INFO("[PS4] [diag] pointer BACK pulse (menu toggle)");
 +    spdlog::default_logger()->flush();
