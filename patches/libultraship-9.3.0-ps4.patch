@@ -2389,10 +2389,10 @@ index d9f1e44..49ff456 100644
 +#endif // __PS4__
 diff --git a/src/ship/port/ps4/Ps4MousePointer.cpp b/src/ship/port/ps4/Ps4MousePointer.cpp
 new file mode 100644
-index 0000000..5133e12
+index 0000000..13a3093
 --- /dev/null
 +++ b/src/ship/port/ps4/Ps4MousePointer.cpp
-@@ -0,0 +1,307 @@
+@@ -0,0 +1,373 @@
 +#ifdef __PS4__
 +
 +#include "ship/port/ps4/Ps4MousePointer.h"
@@ -2452,6 +2452,13 @@ index 0000000..5133e12
 +bool sBackDesired = false;
 +int sBackPulseFrames = 0;
 +
++// Escape key pending release (run #26, Lux): with the menu OPEN a tap
++// injects a single Escape key press instead of the BACK pulse (see step 4
++// below). KEYDOWN goes out on the tap frame, KEYUP on the next frame, so
++// exactly one NewFrame sees Escape down. No countdown needed: the KEYUP
++// is unconditional in step 1.
++bool sEscKeyPending = false;
++
 +// 0..255 -> -32768..32767 (same conversion as PadUpdate's StickToAxis).
 +int16_t StickToAxis(uint8_t value) {
 +    return (int16_t)((int)value * 257 - 32768);
@@ -2485,6 +2492,33 @@ index 0000000..5133e12
 +    event.button.y = y;
 +    if (SDL_PushEvent(&event) < 0) {
 +        SPDLOG_WARN("[PS4] pointer: SDL_PushEvent(SDL_MOUSEBUTTON{}) failed: {}", down ? "DOWN" : "UP",
++                    SDL_GetError());
++    }
++}
++
++// Run #26 (Lux, "Haz que llame a la funcion esc"): push a single Escape
++// key event. Update() is called from HandleEvents() BEFORE the
++// SDL_PeepEvents loops (gfx_sdl2.cpp), so an event pushed here is
++// dispatched in the same frame via HandleSingleEvent, which forwards
++// EVERY event to Fast3dGui::HandleWindowEvents ->
++// ImGui_ImplSDL2_ProcessEvent — the same path the mouse injections above
++// use. The backend maps SDLK_ESCAPE to ImGuiKey_Escape
++// (imgui_impl_sdl2.cpp:234), and Gui::DrawMenu already toggles the menu
++// on ImGuiKey_Escape with NO gControlNav requirement (Gui.cpp:232-236).
++// The scancode side of the event (OnKeydown -> mOnKeyDown) is inert on
++// this build: SetOnKeyDown has no callers, so mOnKeyDown is always null.
++void PushKeyEvent(uint32_t windowId, bool down) {
++    SDL_Event event;
++    SDL_zero(event);
++    event.type = down ? SDL_KEYDOWN : SDL_KEYUP;
++    event.key.windowID = windowId;
++    event.key.state = down ? SDL_PRESSED : SDL_RELEASED;
++    event.key.repeat = 0;
++    event.key.keysym.sym = SDLK_ESCAPE;
++    event.key.keysym.scancode = SDL_SCANCODE_ESCAPE;
++    event.key.keysym.mod = KMOD_NONE;
++    if (SDL_PushEvent(&event) < 0) {
++        SPDLOG_WARN("[PS4] pointer: SDL_PushEvent(SDL_KEY{}) failed: {}", down ? "DOWN" : "UP",
 +                    SDL_GetError());
 +    }
 +}
@@ -2567,6 +2601,15 @@ index 0000000..5133e12
 +        sBackDesired = false;
 +    }
 +
++    // 1b. Escape KEYUP (run #26): the KEYDOWN went out on the tap frame;
++    // release it on the very next frame, so exactly one NewFrame sees
++    // Escape down and DrawMenu toggles the menu exactly once. Unconditional
++    // on menuVisible: the menu is already closed by the time this runs.
++    if (sEscKeyPending) {
++        PushKeyEvent(windowId, false);
++        sEscKeyPending = false;
++    }
++
 +    // 2. Pointer movement, only while the menu is visible. With the menu
 +    //    closed the touchpad and the stick keep their in-game behaviour.
 +    if (menuVisible) {
@@ -2633,27 +2676,50 @@ index 0000000..5133e12
 +    // 4. Touchpad click = menu toggle only (decided by Lux after the run #14
 +    //    console test: the tap/long-press split was awkward — a tap with the
 +    //    menu open did nothing and closing needed a 500 ms hold). Every press
-+    //    toggles the menu (closed -> open, open -> close) via a BACK pulse;
-+    //    it never injects a mouse click (R2 is the click). The press edge is
-+    //    enough: no tap/long-press distinction, and holding the touchpad down
-+    //    does nothing extra.
++    //    toggles the menu (closed -> open, open -> close); it never injects
++    //    a mouse click (R2 is the click). The press edge is enough: no
++    //    tap/long-press distinction, and holding the touchpad down does
++    //    nothing extra.
++    //
++    // Run #26 (Lux, 2026-11-20): CONDITIONAL close. The old design always
++    // started a 4-frame BACK pulse, and the close had TWO owners: Tick
++    // closed the menu on the pulse, then DrawMenu saw the still-active
++    // ImGuiKey_GamepadBack (nav re-enabled by UpdateGamepadNavigation)
++    // and re-opened it — run #25 log: 51 closes, 51 re-opens, menu open
++    // again at the next tap every time. So now:
++    //   - menu CLOSED + tap -> BACK pulse as before (DrawMenu opens it;
++    //     the toast shortcut below is untouched).
++    //   - menu OPEN + tap -> a single Escape key press (KEYDOWN now,
++    //     KEYUP next frame) and NO BACK pulse. DrawMenu toggles on
++    //     ImGuiKey_Escape with no gControlNav requirement, so the close
++    //     has exactly one owner and nothing can re-open the menu behind
++    //     it ("no abrir el menú de nuevo cuando ya se está ahí").
++    // The close works at any zoom and does not depend on nav at all.
 +    const bool click = sClickPressed;
 +    if (click && !sPrevClick) {
-+        // Achievement toast shortcut (Lux's choice): with the menu closed
-+        // and an achievement toast on screen, open the menu straight into
-+        // Logros instead of its last section. The toast's "Ver en Logros"
-+        // button can't be clicked mid-game (the pointer only lives in the
-+        // menu), so the touchpad is the way in. The CVar names must match
-+        // shipwright's CVAR_SETTING("Menu.ActiveHeader") and
-+        // CVAR_SETTING("Menu.LogrosSidebarSection"); the menu reads the
-+        // header CVar fresh on every draw, so setting them before the BACK
-+        // pulse lands the menu on Logros. With the menu open the press
-+        // still just toggles it closed; R2 is untouched.
-+        if (!menuVisible && CVarGetInteger("gAchievements.ToastVisible", 0) != 0) {
-+            CVarSetString("gSettings.Menu.ActiveHeader", "Logros");
-+            CVarSetString("gSettings.Menu.LogrosSidebarSection", "Logros");
++        if (menuVisible) {
++            PushKeyEvent(windowId, true);
++            sEscKeyPending = true;
++            sLastActivityMs = nowMs;
++            // TEMP DIAG: proves the ESC injection fired on console.
++            SPDLOG_INFO("[PS4] [diag] menu ESC injected (menu was open)");
++            spdlog::default_logger()->flush();
++        } else {
++            // Achievement toast shortcut (Lux's choice): with the menu closed
++            // and an achievement toast on screen, open the menu straight into
++            // Logros instead of its last section. The toast's "Ver en Logros"
++            // button can't be clicked mid-game (the pointer only lives in the
++            // menu), so the touchpad is the way in. The CVar names must match
++            // shipwright's CVAR_SETTING("Menu.ActiveHeader") and
++            // CVAR_SETTING("Menu.LogrosSidebarSection"); the menu reads the
++            // header CVar fresh on every draw, so setting them before the BACK
++            // pulse lands the menu on Logros.
++            if (CVarGetInteger("gAchievements.ToastVisible", 0) != 0) {
++                CVarSetString("gSettings.Menu.ActiveHeader", "Logros");
++                CVarSetString("gSettings.Menu.LogrosSidebarSection", "Logros");
++            }
++            StartBackPulse();
 +        }
-+        StartBackPulse();
 +        sLastActivityMs = nowMs;
 +        // TEMP DIAG: confirm the toggle fires on console.
 +        SPDLOG_INFO("[PS4] [diag] pointer touchpad -> TOGGLE menu (was {})", menuVisible ? "open" : "closed");

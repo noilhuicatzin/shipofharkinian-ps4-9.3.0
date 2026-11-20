@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..cc106f4d
+index 00000000..afd09adc
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,2144 @@
+@@ -0,0 +1,2121 @@
 +#include "Achievements.h"
 +#include "AchievementsNotify.h"
 +
@@ -770,6 +770,25 @@ index 00000000..cc106f4d
 +    }
 +    CVarSetInteger(kBribeCount, CVarGetInteger(kBribeCount, 0) + 1);
 +    SaveNow();
++}
++
++void ResetAll() {
++    // Run #26 (Lux): "Reiniciar logros" (menu option, with confirmation).
++    // Destructive: clears EVERY unlock, EVERY reveal, the unseen badge
++    // and the bribe counter (gAchievements.BribeCount) — without the
++    // counter, #1023 would re-unlock on the first bribe after the reset.
++    // Language and reward toggles are settings, not progress: untouched.
++    // The registry does not change (still 98/113 implemented, 800/1005).
++    for (const Def& def : kDefs) {
++        CVarSetInteger(UnlockedCVar(def.id).c_str(), 0);
++        CVarSetInteger(RevealedCVar(def.id).c_str(), 0);
++    }
++    CVarSetInteger(kHasUnseen, 0);
++    CVarSetInteger(kBribeCount, 0);
++    SaveNow();
++    // TEMP DIAG: proves the reset ran on console (and how many defs).
++    SPDLOG_INFO("[PS4] [diag] achievements reset ({} defs cleared, bribes 0)", kDefs.size());
++    spdlog::default_logger()->flush();
 +}
 +
 +struct FightTracker {
@@ -1720,12 +1739,17 @@ index 00000000..cc106f4d
 +// DrawMenu in the frame — GameState_Draw runs before OnGameFrameUpdate
 +// in GameState_Update — so this clear is the last write before the next
 +// frame's NewFrame, and nav stays off even though DrawMenu's
-+// UpdateGamepadNavigation re-sets the flag), and it takes over the BACK
-+// close: with nav off the backend never sets ImGuiKey_GamepadBack, so
-+// Gui::DrawMenu cannot close the menu on the touchpad anymore; the
-+// close is read straight from the SDL controller here instead. On the
-+// menu-close transition nav is re-enabled (only if gControlNav says so),
-+// so the next touchpad press still opens the menu through Gui::DrawMenu.
++// UpdateGamepadNavigation re-sets the flag). Run #26 (Lux, "Haz que
++// llame a la funcion esc"): the menu CLOSE is no longer read from the
++// SDL controller here at all. With the menu open, a touchpad tap makes
++// Ps4MousePointer push ONE Escape key event (no BACK pulse), and
++// Gui::DrawMenu toggles the menu on ImGuiKey_Escape with no gControlNav
++// requirement — a single toggle owner, so nothing can re-open the menu
++// behind the close. The old Tick BACK close (run #25: level close +
++// guard + deferred nav restore) is deleted: Tick closed on the 4-frame
++// pulse and DrawMenu re-opened the menu on the same pulse (run #25 log:
++// 51 closes, 51 re-opens). With the menu closed a tap still starts the
++// BACK pulse as before, so the open path is unchanged.
 +// The old scroll also had a second, independent flaw: it injected into
 +// ImGui::GetIO().MouseWheel, which only scrolls the window UNDER THE
 +// POINTER — and the pointer auto-hides after 3 s and is almost never
@@ -1802,19 +1826,6 @@ index 00000000..cc106f4d
 +static bool sMenuWasOpen = false;
 +// BACK close guard (run #25): Tick closes the menu when BACK is down AND
 +// BACK has been seen up at least once since the menu opened. The old
-+// rising-edge close (sBackPrev) missed taps: the 4-frame pulse is short
-+// and Tick sometimes never samples the edge (run #24 log: 39 "was open"
-+// taps, 0 closes, while zoom/scroll/section all worked). A level close
-+// only needs ONE sample of BACK down during the pulse. The guard stops
-+// the same pulse that opened the menu from closing it at once: on open
-+// it is false, and it only becomes true once Tick sees BACK up.
-+static bool sSeenBackUpSinceOpen = false;
-+// Nav restore deferred (run #25): CloseMenuNow used to re-enable
-+// NavEnableGamepad at once, while the 4-frame BACK pulse was still
-+// active — DrawMenu then saw ImGuiKey_GamepadBack and re-opened the menu
-+// (run #24 log: 15 Tick closes, menu open again at the next tap). The
-+// restore waits until BACK is actually released.
-+static bool sNavRestorePending = false;
 +// One-time boot sanity: reset a menu scale stuck at the max (see below).
 +static bool sDidZoomSanity = false;
 +// Repeat state for the D-pad, per direction group: frames held and the
@@ -1913,33 +1924,35 @@ index 00000000..cc106f4d
 +    return best;
 +}
 +
-+// Close the menu from code (the BACK close and the L3+R3 quick restart
-+// share this): toggle visibility and release the game-input block. Nav
-+// is NOT restored here: the BACK pulse that triggered the close is still
-+// active for up to 4 frames, and if NavEnableGamepad is on, DrawMenu
-+// sees ImGuiKey_GamepadBack and re-opens the menu (run #24 log: 15 Tick
-+// closes, menu open again at the next tap). Instead the restore is
-+// deferred (sNavRestorePending) until Tick sees BACK released — see
-+// CheckMenuInput. No-op when the menu is not visible (ToggleVisibility
-+// toggles, so never call it blind).
++// Close the menu from code (run #26: only the L3+R3 quick restart uses
++// this now). The touchpad close is owned by DrawMenu via the injected
++// Escape key (Ps4MousePointer, libultraship) — Tick no longer closes the
++// menu, so there is no second toggle owner to re-open it (run #25 log:
++// the 4-frame BACK pulse re-opened the menu 51/51 times). Force closed,
++// never toggle: ToggleVisibility would OPEN a closed menu if called
++// blind, and this must only ever close. No nav restore here either: the
++// deferred restore (run #25) is gone with the BACK close — its stated
++// purpose (re-arm the next BACK open) cannot be the mechanism anyway,
++// because the next DrawMenu clears nav while the menu is closed, and run
++// #24 proves opens work without any deferred restore (see
++// run26-progress.md). If the #26 console test shows the open broke, the
++// fix is a real nav re-arm, not this restore.
 +static void CloseMenuNow() {
 +    auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
 +    if (gui == nullptr) {
 +        return;
 +    }
 +    auto menu = gui->GetMenu();
-+    if (menu == nullptr || !menu->IsVisible()) {
++    if (menu == nullptr) {
 +        return;
 +    }
-+    menu->ToggleVisibility();
++    menu->Hide(); // public force-close (GuiElement::Hide == SetVisibility(false),
++                  // which GuiWindow overrides to also sync the visibility CVar).
++                  // SetVisibility itself is protected, so Hide() is the way in.
 +    if (sMenuInputBlocked) {
 +        ControllerUnblockGameInput(kMenuInputBlockId);
 +        sMenuInputBlocked = false;
 +    }
-+    // Nav is NOT restored here (run #25): the BACK pulse is still
-+    // active, and re-enabling nav now lets DrawMenu re-open the menu.
-+    // Defer it until Tick sees BACK released (CheckMenuInput).
-+    sNavRestorePending = true;
 +    sMenuWasOpen = false;
 +    sZoomHoldFrames = 0;
 +    sZoomDir = 0;
@@ -1971,35 +1984,11 @@ index 00000000..cc106f4d
 +    if (menuOpen && !sMenuWasOpen) {
 +        ControllerBlockGameInput(kMenuInputBlockId);
 +        sMenuInputBlocked = true;
-+        // The BACK pulse that just opened the menu is still active for a
-+        // frame or two; the close guard starts false, so that same pulse
-+        // cannot close the menu again at once (it only becomes true once
-+        // Tick sees BACK up — see the BACK close below).
-+        sSeenBackUpSinceOpen = false;
 +    } else if (!menuOpen && sMenuWasOpen && sMenuInputBlocked) {
 +        ControllerUnblockGameInput(kMenuInputBlockId);
 +        sMenuInputBlocked = false;
-+        // Nav is NOT restored here (run #25): the BACK pulse is still
-+        // active, and re-enabling nav now lets DrawMenu re-open the
-+        // menu. Defer it until BACK is released (below).
-+        sNavRestorePending = true;
 +    }
 +    sMenuWasOpen = menuOpen;
-+
-+    // Deferred nav restore (run #25): re-enable gamepad nav only once
-+    // BACK is actually released, so the closing pulse cannot re-open
-+    // the menu through DrawMenu. Runs every frame, menu open or not.
-+    if (sNavRestorePending && !PadButton(SDL_CONTROLLER_BUTTON_BACK)) {
-+        sNavRestorePending = false;
-+        // Nav back on (only if the setting says so): the touchpad opens
-+        // the menu through Gui::DrawMenu, which needs the BACK key mapped.
-+        if (CVarGetInteger(CVAR_IMGUI_CONTROLLER_NAV, 0) != 0) {
-+            ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-+        }
-+        // TEMP DIAG: proves nav came back after a close, and when.
-+        SPDLOG_INFO("[PS4] [diag] menu nav restored (BACK released)");
-+        spdlog::default_logger()->flush();
-+    }
 +
 +    if (!menuOpen) {
 +        sZoomHoldFrames = 0;
@@ -2035,32 +2024,16 @@ index 00000000..cc106f4d
 +    // scrollbar above; the cursor is only drawn while the menu is open.
 +    ImGui::GetStyle().MouseCursorScale = 1.0f;
 +
-+    // --- BACK closes the menu (takeover) ---
-+    // With nav off, the backend never sets ImGuiKey_GamepadBack, so
-+    // Gui::DrawMenu cannot close the menu on the touchpad anymore; the
-+    // close is read straight from the SDL controller here instead.
-+    // Level close with a guard (run #25): close whenever BACK is down
-+    // AND BACK has been seen up at least once since the menu opened.
-+    // The old rising-edge close missed taps — the 4-frame pulse is
-+    // short and Tick sometimes never samples the edge (run #24 log:
-+    // 39 "was open" taps, 0 closes, while zoom/scroll/section all
-+    // worked). A level close only needs ONE sample of BACK down during
-+    // the pulse. The guard stops the same pulse that opened the menu
-+    // from closing it at once.
-+    const bool backDown = PadButton(SDL_CONTROLLER_BUTTON_BACK);
-+    if (!backDown) {
-+        sSeenBackUpSinceOpen = true;
-+    }
-+    if (backDown && sSeenBackUpSinceOpen) {
-+        // TEMP DIAG: proves the BACK close reached Tick(). If this line
-+        // is missing from the next log while the menu stays open, the
-+        // pulse is still too short for the 20 Hz Tick and the
-+        // libultraship pulse needs to grow.
-+        SPDLOG_INFO("[PS4] [diag] menu BACK edge consumed (closing menu)");
-+        spdlog::default_logger()->flush();
-+        CloseMenuNow();
-+        return;
-+    }
++    // --- NO BACK close here anymore (run #26, Lux) ---
++    // The touchpad close is owned by Gui::DrawMenu via the injected
++    // Escape key (Ps4MousePointer, libultraship): with the menu open a
++    // tap pushes ONE SDL_KEYDOWN/KEYUP pair for Escape and NO BACK pulse,
++    // so DrawMenu toggles the menu exactly once and nothing can re-open
++    // it behind the close. The old Tick BACK close (level close + guard +
++    // deferred nav restore, run #25) is deleted: Tick closed on the
++    // 4-frame pulse and DrawMenu then re-opened the menu on the same
++    // pulse (run #25 log: 51/51). With the menu closed a tap still
++    // starts the BACK pulse as before, so the open path is unchanged.
 +
 +    // --- zoom: D-pad left/right steps the existing ImGuiScale setting ---
 +    const int zoomDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_RIGHT) ? 1 : 0) -
@@ -2104,13 +2077,17 @@ index 00000000..cc106f4d
 +        }
 +    }
 +
-+    // --- section switching: D-pad up/down (run #25) ---
++    // --- section switching: D-pad up/down (run #25, direction fixed run #26) ---
 +    // Lux: the D-pad up/down now does what R1/L1 did — cycle the flat
 +    // (header, section) list, so down from the last section of one
 +    // header lands on the first section of the next header. Same input
 +    // path (SDL controller via Tick, with hold-repeat).
-+    const int sectionDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_UP) ? 1 : 0) -
-+                           (PadButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN) ? 1 : 0);
++    // Run #26: the direction was INVERTED (Lux, run #25 console test:
++    // up moved the selection down). CycleSidebarSection does
++    // next = (current + dir) % total, so dir +1 = the NEXT section =
++    // visually DOWN the list. D-pad UP must therefore be -1 and DOWN +1.
++    const int sectionDir = (PadButton(SDL_CONTROLLER_BUTTON_DPAD_DOWN) ? 1 : 0) -
++                           (PadButton(SDL_CONTROLLER_BUTTON_DPAD_UP) ? 1 : 0);
 +    if (RepeatStep(sectionDir, sSectionHoldFrames, sSectionDir)) {
 +        auto gui = Ship::Context::GetRawInstance()->GetWindow()->GetGui();
 +        if (gui != nullptr) {
@@ -2269,10 +2246,10 @@ index 00000000..cc106f4d
 +} // namespace Achievements
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.h b/soh/soh/Enhancements/Achievements/Achievements.h
 new file mode 100644
-index 00000000..7d69a421
+index 00000000..be20bdac
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.h
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,88 @@
 +#pragma once
 +
 +#include <string>
@@ -2327,6 +2304,12 @@ index 00000000..7d69a421
 +bool HasUnseen();    // True when something new unlocked since the Logros menu
 +                     // was last opened (drives the badge on the Logros tab).
 +void MarkSeen();     // Clear the unseen flag (called when the Logros menu opens).
++
++// Destructive reset (run #26, Lux: "Reiniciar logros" menu option, with
++// confirmation): clears ALL unlocks, ALL reveals, the unseen flag and
++// the bribe counter (gAchievements.BribeCount). Language and reward
++// toggles are untouched. The registry does not change.
++void ResetAll();
 +
 +// Display language: 0 = English, 1 = Español (CVar gAchievements.Language).
 +int Language();
@@ -2837,7 +2820,7 @@ index 1b4f62c4..6041c70c 100644
  
  bool VerifyArchiveVersion(OTRVersion version) {
 diff --git a/soh/soh/SohGui/Menu.cpp b/soh/soh/SohGui/Menu.cpp
-index 642bc54a..fe24ca76 100644
+index 642bc54a..d5416597 100644
 --- a/soh/soh/SohGui/Menu.cpp
 +++ b/soh/soh/SohGui/Menu.cpp
 @@ -3,6 +3,7 @@
@@ -2870,7 +2853,7 @@ index 642bc54a..fe24ca76 100644
      return pressed;
  }
  
-@@ -289,10 +296,114 @@ void Menu::AddMenuEntry(std::string entryName, const char* entryCvar) {
+@@ -289,10 +296,116 @@ void Menu::AddMenuEntry(std::string entryName, const char* entryCvar) {
      menuOrder.push_back(entryName);
  }
  
@@ -2928,8 +2911,10 @@ index 642bc54a..fe24ca76 100644
 +            CVarSetString(headerCvar, header.c_str());
 +            CVarSetString(entry.sidebarCvar, entry.sidebarOrder[remaining].c_str());
 +            CVarSave();
-+            // TEMP DIAG: proves the section switch on console.
-+            SPDLOG_INFO("[PS4] [diag] menu section -> {} / {}", header, entry.sidebarOrder[remaining]);
++            // TEMP DIAG: proves the section switch on console (dir: +1 = next
++            // section = visually down, -1 = previous = visually up).
++            SPDLOG_INFO("[PS4] [diag] menu section -> {} / {} (dir {})", header, entry.sidebarOrder[remaining],
++                        dir);
 +            spdlog::default_logger()->flush();
 +            return;
 +        }
@@ -2985,7 +2970,7 @@ index 642bc54a..fe24ca76 100644
  std::unordered_map<uint32_t, disabledInfo>& Menu::GetDisabledMap() {
      return disabledMap;
  }
-@@ -731,7 +842,8 @@ void Menu::DrawElement() {
+@@ -731,7 +844,8 @@ void Menu::DrawElement() {
          if (headerIndex != label) {
              ImGui::PushStyleColor(ImGuiCol_Button, { 0, 0, 0, 0 });
          }
@@ -2995,7 +2980,7 @@ index 642bc54a..fe24ca76 100644
              if (headerSearch) {
                  menuSearch.Clear();
              }
-@@ -801,7 +913,7 @@ void Menu::DrawElement() {
+@@ -801,7 +915,7 @@ void Menu::DrawElement() {
      options2.tooltip = "Reset"
  #ifdef __APPLE__
                         " (Command-R)"
@@ -3111,10 +3096,10 @@ index feec116a..23900a4f 100644
  
 diff --git a/soh/soh/SohGui/SohMenuAchievements.cpp b/soh/soh/SohGui/SohMenuAchievements.cpp
 new file mode 100644
-index 00000000..13400897
+index 00000000..f9abf654
 --- /dev/null
 +++ b/soh/soh/SohGui/SohMenuAchievements.cpp
-@@ -0,0 +1,295 @@
+@@ -0,0 +1,338 @@
 +#include <imgui.h>
 +#include <set>
 +#include <ship/Context.h>
@@ -3284,6 +3269,40 @@ index 00000000..13400897
 +    }
 +}
 +
++// "Reiniciar logros" (run #26, Lux): destructive, so two steps. First
++// press arms the confirmation (in-memory only, like gRevealConfirm);
++// second press actually resets. Cancel disarms. Lives in the Logros
++// sidebar, after the reward switches and before the achievement lists:
++// it resets ALL achievements (both categories), so it sits above the
++// lists, not inside either of them.
++static bool gResetConfirmArmed = false;
++
++static void DrawResetAchievements(WidgetInfo&) {
++    ImGui::SeparatorText(Achievements::Tr("Reset achievements", "Reiniciar logros").c_str());
++    ImGui::TextColored(kColorDesc, "%s",
++                       Achievements::Tr("Clears all unlocks, reveals and the bribe counter.",
++                                        "Borra todos los desbloqueos, revelados y el contador de sobornos.")
++                           .c_str());
++    if (!gResetConfirmArmed) {
++        if (ImGui::Button(Achievements::Tr("Reset achievements", "Reiniciar logros").c_str())) {
++            gResetConfirmArmed = true;
++        }
++    } else {
++        ImGui::TextColored(kColorDesc, "%s",
++                           Achievements::Tr("Are you sure? This cannot be undone.",
++                                            "¿Seguro? Esto no se puede deshacer.")
++                               .c_str());
++        if (ImGui::Button(Achievements::Tr("Yes, reset everything", "Sí, borrar todo").c_str())) {
++            Achievements::ResetAll();
++            gResetConfirmArmed = false;
++        }
++        ImGui::SameLine();
++        if (ImGui::Button(Achievements::Tr("Cancel", "Cancelar").c_str())) {
++            gResetConfirmArmed = false;
++        }
++    }
++}
++
 +void SohMenu::AddMenuAchievements() {
 +    AddMenuEntry("Logros", CVAR_SETTING("Menu.LogrosSidebarSection"));
 +    WidgetPath path;
@@ -3333,6 +3352,14 @@ index 00000000..13400897
 +        .CVar("gAchievements.Reward.Fanfare")
 +        .Options(CheckboxOptions().DefaultValue(true));
 +
++    // "Reiniciar logros" (run #26, Lux): destructive reset of ALL
++    // achievements, with confirmation. Custom widget: the button text is
++    // drawn live via Tr(), and the stored widget name ("Reset
++    // achievements" / "Reiniciar logros") is in kAchievementsLabels so
++    // the live-language rewrite picks it up.
++    AddWidget(path, Achievements::Tr("Reset achievements", "Reiniciar logros"), WIDGET_CUSTOM)
++        .CustomFunction(DrawResetAchievements);
++
 +    AddWidget(path, Achievements::Tr("Achievements", "Logros"), WIDGET_SEPARATOR_TEXT);
 +    AddWidget(path, Achievements::Tr("Vanilla achievements", "Logros vainilla"), WIDGET_CUSTOM)
 +        .CustomFunction(DrawVanillaList);
@@ -3374,6 +3401,7 @@ index 00000000..13400897
 +    { "Secret message", "Mensaje secreto" },
 +    { "Unlock jingle", "Jingle al desbloquear" },
 +    { "Final fanfare", "Fanfarria final" },
++    { "Reset achievements", "Reiniciar logros" },
 +    { "Achievements", "Logros" },
 +    { "Vanilla achievements", "Logros vainilla" },
 +    { "Randomizer achievements", "Logros del Randomizer" },
