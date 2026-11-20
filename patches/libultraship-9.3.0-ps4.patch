@@ -597,10 +597,10 @@ index ad9b1dd..fee328b 100644
  #include <stdbool.h>
 diff --git a/src/fast/backends/gfx_opengl_ps4.cpp b/src/fast/backends/gfx_opengl_ps4.cpp
 new file mode 100644
-index 0000000..07e39fb
+index 0000000..428aa3b
 --- /dev/null
 +++ b/src/fast/backends/gfx_opengl_ps4.cpp
-@@ -0,0 +1,1208 @@
+@@ -0,0 +1,1222 @@
 +#include "ship/window/Window.h"
 +// OpenGL ES 2.0 renderer for PS4 (Piglet). Derived from gfx_opengl.cpp, with everything that needs
 +// desktop GL / GLES3 (MSAA, glBlitFramebuffer, VAOs, depth read back, sized formats) replaced.
@@ -1300,7 +1300,14 @@ index 0000000..07e39fb
 +            const int n64modeFactor = 120;
 +            const int noVanishFactor = 100;
 +            GLfloat SSDB = -2;
-+            switch (Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_Z_FIGHTING_MODE, 0)) {
++            // TEMP DIAG (run #29): log the Z-fighting mode and the SSDB
++            // actually applied on every decal transition, to check
++            // whether Piglet honors glPolygonOffset at all (the Kokiri
++            // path vanishes in all three modes on console). Remove these
++            // lines to drop the diag.
++            const int zFightingMode =
++                Ship::Context::GetRawInstance()->GetConsoleVariables()->GetInteger(CVAR_Z_FIGHTING_MODE, 0);
++            switch (zFightingMode) {
 +                // scaled z-fighting (N64 mode like)
 +                case 1:
 +                    if (mFrameBuffers.size() >
@@ -1322,9 +1329,16 @@ index 0000000..07e39fb
 +            }
 +            glPolygonOffset(SSDB, -2);
 +            glEnable(GL_POLYGON_OFFSET_FILL);
++            // TEMP DIAG (run #29)
++            SPDLOG_INFO("[KokiriDiag] decal ON: mode={} SSDB={} fbHeight={}", zFightingMode, SSDB,
++                        mFrameBuffers.size() > mCurrentFrameBuffer
++                            ? (int)mFrameBuffers[mCurrentFrameBuffer].height
++                            : -1);
 +        } else {
 +            glPolygonOffset(0, 0);
 +            glDisable(GL_POLYGON_OFFSET_FILL);
++            // TEMP DIAG (run #29)
++            SPDLOG_INFO("[KokiriDiag] decal OFF: polygon offset disabled");
 +        }
 +    }
 +

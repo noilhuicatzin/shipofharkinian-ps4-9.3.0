@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..afd09adc
+index 00000000..5d2c43e1
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,2121 @@
+@@ -0,0 +1,2649 @@
 +#include "Achievements.h"
 +#include "AchievementsNotify.h"
 +
@@ -144,6 +144,7 @@ index 00000000..afd09adc
 +#include "functions.h"
 +#include "macros.h"
 +#include "variables.h"
++#include "z64collision_check.h" // DMG_HAMMER / DMG_ARROW / DMG_SLASH_MASTER (boss-hit attribution, run #29)
 +#include "z64save.h"
 +}
 +
@@ -163,6 +164,8 @@ index 00000000..afd09adc
 +#include "soh/OTRGlobals.h"
 +#include "soh/Enhancements/gameplaystats.h"
 +#include "soh/Enhancements/randomizer/randomizer.h"
++#include "soh/Enhancements/randomizer/static_data.h" // StaticData::GetShopLocations/GetLocation (run #29, #1005)
++#include <ship/resource/archive/ArchiveManager.h> // HasActiveMod (run #29, #1001)
 +
 +namespace Achievements {
 +
@@ -227,8 +230,8 @@ index 00000000..afd09adc
 +static const std::vector<Def> kDefs = {
 +    // ---- Vanilla (90, 625 pts) ----
 +    // id, titleEn, titleEs, descEn, descEs, points, category, type, hidden, icon, implemented
-+    { 1, "Spider Net", "Red de araña", "Get all 100 Gold Skulltulas.",
-+      "Consigue las 100 Gold Skulltulas.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 1, "Spider Net", "Red de araña", "Defeat Queen Gohma before she can retreat to the ceiling.",
++      "Vence a la Reina Gohma antes de que se retire al techo.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 2, "Entrusted Mission", "Misión encomendada", "Receive the Spiritual Stone of the Forest.",
 +      "Recibe la Piedra Espiritual del Bosque.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_KOKIRI_EMERALD, true },
@@ -240,9 +243,9 @@ index 00000000..afd09adc
 +    { 5, "Dance Into the Fire", "Baila con el fuego", "Receive the Goron Bracelet from Darunia.",
 +      "Recibe el brazalete de Darunia en la Ciudad Goron.", 5, Category::Vanilla, Type::Progression,
 +      true, nullptr, true },
-+    { 6, "Bombalicious", "Explosión de sabor", "Get blown up by your own bomb 3 times.",
-+      "Que te explote tu propia bomba 3 veces.", 10, Category::Vanilla, Type::Missable, false,
-+      nullptr, false },
++    { 6, "Bombalicious", "Explosión de sabor", "Defeat King Dodongo before he breathes fire without using Bombs from your bag.",
++      "Vence al Rey Dodongo antes de que escupa fuego sin usar bombas de tu bolsa.", 10, Category::Vanilla, Type::Missable, false,
++      nullptr, true },
 +    { 7, "Soul Brothers", "Hermanos del alma", "Receive the Spiritual Stone of Fire.",
 +      "Recibe la Piedra Espiritual del Fuego.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_GORON_RUBY, true },
@@ -261,9 +264,9 @@ index 00000000..afd09adc
 +    { 12, "The Great Escape", "La gran escapada", "Escape Hyrule Castle with Zelda.",
 +      "Escapa del castillo de Hyrule con Zelda.", 5, Category::Vanilla, Type::None, false, nullptr,
 +      true },
-+    { 13, "Drunken Master", "Maestro borracho", "Hit a Cucco 5 times in a row.",
-+      "Pega a un Cucco 5 veces seguidas.", 10, Category::Vanilla, Type::Missable, false, nullptr,
-+      false },
++    { 13, "Drunken Master", "Maestro borracho", "Lower Phantom Ganon to 1 HP by using only the Bow and Bottles.",
++      "Baja a Ganon Fantasma a 1 HP usando solo el arco y las botellas.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      true },
 +    { 14, "Awakening", "Despertar", "Awaken the Forest Sage.",
 +      "Despierta a la Sabia del Bosque.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_FOREST, true },
@@ -448,24 +451,24 @@ index 00000000..afd09adc
 +      "Vence a Barinade en menos de 1:51 con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 94, "Dodgeball", "Balón prisionero", "Defeat Phantom Ganon without healing and with 3 hearts only.",
 +      "Vence a Ganon Fantasma sin curarte y con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
-+    { 95, "Whac-A-Mole", "Golpea al topo", "Hit 10 enemies with the Megaton Hammer.",
-+      "Golpea a 10 enemigos con el martillo Megatón.", 10, Category::Vanilla, Type::Missable,
-+      false, nullptr, false },
++    { 95, "Whac-A-Mole", "Golpea al topo", "Defeat Volvagia using only the Megaton Hammer and without healing with 3 hearts only.",
++      "Vence a Volvagia usando solo el martillo Megatón y sin curarte, con solo 3 corazones.", 10, Category::Vanilla, Type::Missable,
++      false, nullptr, true },
 +    { 96, "Tentacles of the Deep", "Tentáculos de lo profundo",
 +      "Defeat Morpha without falling into water or taking damage with 3 hearts only.", "Vence a Morpha sin caer al agua ni recibir daño, con solo 3 corazones.", 10,
 +      Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 97, "Invisible Stalker", "Acechador invisible", "Defeat Bongo Bongo without using the Lens of Truth and without healing with 3 hearts only.",
 +      "Vence a Bongo Bongo sin usar la Lente de la Verdad ni curarte, con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr,
 +      true },
-+    { 98, "Double Trouble", "Doble problema", "Defeat two bosses at once.",
-+      "Derrota a dos jefes a la vez.", 10, Category::Vanilla, Type::Missable, false, nullptr, false },
++    { 98, "Double Trouble", "Doble problema", "Defeat the Twinrova Sisters using only the Master Sword and Mirror Shield without using Fairies and with 3 hearts only.",
++      "Vence a las hermanas Twinrova usando solo la Espada Maestra y el Escudo Espejo, sin usar hadas y con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 99, "Dark Lord", "Señor oscuro", "Defeat Ganon without getting hit and with 3 hearts only.",
 +      "Vence a Ganon sin recibir daño y con solo 3 corazones.", 25, Category::Vanilla, Type::Missable, false, nullptr,
 +      true },
 +    // ---- Randomizer (23, 380 pts) ----
 +    { 1001, "Not Vanilla Anymore", "No más vainilla", "Play with at least one .o2r mod active.",
 +      "Juega con al menos un mod (.o2r) activo.", 5, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1002, "Seed Beater", "Comedor de semillas", "Beat Ganon in a Randomizer seed.",
 +      "Derrota a Ganon en una seed del Randomizer.", 25, Category::Randomizer, Type::None, false,
 +      nullptr, true },
@@ -477,7 +480,7 @@ index 00000000..afd09adc
 +      true },
 +    { 1005, "The price is a lie", "El precio es una mentira!",
 +      "Buy an item at an inflated shop price.", "Compra un objeto con sobreprecio en una tienda.",
-+      10, Category::Randomizer, Type::None, false, nullptr, false },
++      10, Category::Randomizer, Type::None, false, nullptr, true },
 +    { 1006, "Kokiri Sword Shuffle", "Espada Kokiri revuelta",
 +      "Generate a seed with the Kokiri Sword shuffled.",
 +      "Genera una seed con la Espada Kokiri revuelta.", 5, Category::Randomizer, Type::None, false,
@@ -485,26 +488,26 @@ index 00000000..afd09adc
 +    { 1007, "This doesn't belong here", "esto no es de aquí",
 +      "Find a dungeon key outside its own dungeon.",
 +      "Consigue una llave fuera de su mazmorra.", 5, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1008, "Increased Damage", "Daño aumentado", "Beat Ganon with damage set to x2 or more.",
 +      "Derrota a Ganon con el daño aumentado (x2 o más).", 10, Category::Randomizer, Type::None,
 +      false, nullptr, true },
 +    { 1009, "Boss Rush", "Boss Rush", "Complete the Boss Rush.",
-+      "Completa el Boss Rush.", 25, Category::Randomizer, Type::None, false, nullptr, false },
++      "Completa el Boss Rush.", 25, Category::Randomizer, Type::None, false, nullptr, true },
 +    { 1010, "Wisdom, Power and Courage", "Sabiduría, poder y valor",
 +      "Win a seed with the Triforce Hunt win condition.",
 +      "Gana una seed con la condición de victoria Caza de la Trifuerza.", 25,
 +      Category::Randomizer, Type::None, false, nullptr, true },
 +    { 1011, "Praise the Sun", "Praise the Sun", "Beat a seed without dying once.",
 +      "Pásate una seed sin morir ni una vez.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1012, "Gotta Go Fast", "¡Hay que ir rápido!", "Beat a seed in under 5 hours.",
 +      "Pásate una seed en menos de 5 horas.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1013, "Does this belong here?", "esto es de aquí?",
 +      "Find a dungeon reward outside its own dungeon.",
 +      "Consigue una recompensa de mazmorra fuera de su mazmorra.", 5, Category::Randomizer,
-+      Type::None, false, nullptr, false },
++      Type::None, false, nullptr, true },
 +    { 1014, "100 Skulltulas", "100 Skulltulas", "Get all 100 Gold Skulltulas in a seed.",
 +      "Consigue las 100 Skulltulas doradas en una seed.", 25, Category::Randomizer, Type::None,
 +      false, nullptr, true },
@@ -529,9 +532,9 @@ index 00000000..afd09adc
 +      Type::None, false, nullptr, true },
 +    { 1021, "Flawless Boss Rush", "Boss Rush sin daño", "Complete the Boss Rush without taking damage.",
 +      "Completa el Boss Rush sin recibir daño.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, false },
++      nullptr, true },
 +    { 1022, "Five Seeds", "Completa 5 seeds", "Beat Ganon in 5 seeds.",
-+      "Derrota a Ganon en 5 seeds.", 25, Category::Randomizer, Type::None, false, nullptr, false },
++      "Derrota a Ganon en 5 seeds.", 25, Category::Randomizer, Type::None, false, nullptr, true },
 +    { 1023, "Money Solves Everything, Twenty Times", "El dinero lo resuelve todo, veinte veces",
 +      "Bribe the guard 20 times in Randomizer seeds (200 rupees in total).",
 +      "Soborna al guardia 20 veces en seeds del Randomizer (200 rupias en total).", 5,
@@ -772,19 +775,38 @@ index 00000000..afd09adc
 +    SaveNow();
 +}
 +
++// Run #29 meta-progression counters (CVars, persist across saves/seeds):
++// * kSeedsCompleted — Randomizer seeds beaten (Ganon wins), for #1022.
++//   Incremented once per win, keyed by the defeat timestamp (see
++//   CountRandoWin in Tick), so the 1.5 s re-runs during the credits
++//   cannot count one win twice.
++// * kLastSeedWin — the TIMESTAMP_DEFEAT_GANON of the last win counted.
++// * kBossRushTookDamage — 1 if the player took damage during the current
++//   Boss Rush attempt, for #1021. Reset by Achievements_NotifyBossRushStart
++//   when a new Boss Rush file is created (BossRush_InitSave).
++static const char* kSeedsCompleted = "gAchievements.SeedsCompleted";
++static const char* kLastSeedWin = "gAchievements.LastSeedWin";
++static const char* kBossRushTookDamage = "gAchievements.BossRushTookDamage";
++
 +void ResetAll() {
 +    // Run #26 (Lux): "Reiniciar logros" (menu option, with confirmation).
 +    // Destructive: clears EVERY unlock, EVERY reveal, the unseen badge
 +    // and the bribe counter (gAchievements.BribeCount) — without the
 +    // counter, #1023 would re-unlock on the first bribe after the reset.
 +    // Language and reward toggles are settings, not progress: untouched.
-+    // The registry does not change (still 98/113 implemented, 800/1005).
++    // The registry does not change (still 112/113 implemented, 1000/1005
++    // after run #29; #46 stays unimplemented).
 +    for (const Def& def : kDefs) {
 +        CVarSetInteger(UnlockedCVar(def.id).c_str(), 0);
 +        CVarSetInteger(RevealedCVar(def.id).c_str(), 0);
 +    }
 +    CVarSetInteger(kHasUnseen, 0);
 +    CVarSetInteger(kBribeCount, 0);
++    // Run #29: the new counters, or #1022 / #1021 would re-unlock on the
++    // first win / rush after the reset (same reason as the bribe counter).
++    CVarSetInteger(kSeedsCompleted, 0);
++    CVarSetInteger(kLastSeedWin, 0);
++    CVarSetInteger(kBossRushTookDamage, 0);
 +    SaveNow();
 +    // TEMP DIAG: proves the reset ran on console (and how many defs).
 +    SPDLOG_INFO("[PS4] [diag] achievements reset ({} defs cleared, bribes 0)", kDefs.size());
@@ -803,6 +825,16 @@ index 00000000..afd09adc
 +    bool inWater = false;    // PLAYER_STATE1_IN_WATER seen (Morpha room)
 +    bool fell = false;       // player Y below the platform threshold
 +    bool lensUsed = false;   // play->actorCtx.lensActive seen (Bongo Bongo)
++    // Run #29 (DIFÍCIL damage attribution + boss-phase latches):
++    bool gohmaRetreated = false; // Gohma started climbing the wall (#1)
++    bool dodongoBreathedFire = false; // a BdFire (fire breath) spawned (#6)
++    bool bagBombUsed = false; // ITEM_BOMB ammo decreased — bag bombs only,
++        // NOT bombchus (bombUsed above combines both and #30 uses it; #6
++        // forbids only "Bombs from your bag")
++    bool nonArrowHit = false; // a non-arrow hit landed on Phantom Ganon (#13)
++    bool nonHammerHit = false; // a non-hammer hit landed on Volvagia (#95)
++    bool nonMasterSwordHit = false; // a non-Master-Sword hit landed on Twinrova (#98)
++    int bossHealth = 0; // live boss colChkInfo.health, polled for #13 only
 +    int fairyCount = 0;
 +    int bombAmmo = 0;
 +    int bombchuAmmo = 0;
@@ -810,6 +842,62 @@ index 00000000..afd09adc
 +    int frames = 0; // logic ticks since the baselines (20 Hz; #93 < 2220)
 +};
 +static FightTracker sFight;
++
++// Run #29 boss-hit attribution. The boss actors report every hit that
++// actually reduces their health (via Achievements_NotifyBossHit, called
++// from the boss's own collision code), with the toucher's dmgFlags. The
++// tracker latches "a hit by a disallowed weapon landed" per boss, and the
++// verdict reads it at the defeat (or, for #13, when the health reaches
++// the target). The allowed masks are the DMG_ constants
++// (soh/include/z64collision_check.h): DMG_HAMMER = swing|jump, DMG_ARROW
++// = all arrow types, Master Sword = slash|spin|jump of the Master Sword.
++// A hit that deals no damage (hookshot on Volvagia/Twinrova, a hit at
++// full health clamp) never calls the notify, so it cannot disqualify.
++extern "C" void Achievements_NotifyBossHit(u32 dmgFlags) {
++    if (!sFight.armed) {
++        return;
++    }
++    switch (sFight.bossActorId) {
++        case ACTOR_BOSS_FD2: // Volvagia (#95): only the Megaton Hammer.
++            if ((dmgFlags & DMG_HAMMER) == 0) {
++                sFight.nonHammerHit = true;
++            }
++            break;
++        case ACTOR_BOSS_GANONDROF: // Phantom Ganon (#13): only the Bow.
++            if ((dmgFlags & DMG_ARROW) == 0) {
++                sFight.nonArrowHit = true;
++            }
++            break;
++        case ACTOR_BOSS_TW: // Twinrova (#98): only the Master Sword.
++            // (The Mirror Shield's reflected beam only stuns her — it
++            // deals no health damage, so it needs no notify; the stun
++            // itself is inherently Mirror-Shield-only.)
++            if ((dmgFlags & (DMG_SLASH_MASTER | DMG_SPIN_MASTER | DMG_JUMP_MASTER)) == 0) {
++                sFight.nonMasterSwordHit = true;
++            }
++            break;
++        default:
++            break;
++    }
++}
++
++// Run #29, #1 Spider Net: Gohma started her retreat to the ceiling.
++// Called from BossGoma_SetupWallClimb (z_boss_goma.c), the single place
++// the climb begins (when she touches a wall on the floor).
++extern "C" void Achievements_NotifyGohmaRetreat() {
++    if (sFight.armed && sFight.bossActorId == ACTOR_BOSS_GOMA) {
++        sFight.gohmaRetreated = true;
++    }
++}
++
++// Run #29, #1021 Flawless Boss Rush: a new Boss Rush file was created.
++// Called from BossRush_InitSave (BossRush.cpp). Resets the damage flag so
++// a fresh attempt starts clean; mid-rush save/load keeps the flag (it is
++// a CVar, and loading an existing file does not call InitSave).
++extern "C" void Achievements_NotifyBossRushStart() {
++    CVarSetInteger(kBossRushTookDamage, 0);
++    SaveNow();
++}
 +
 +static int CountFairies() {
 +    int count = 0;
@@ -825,6 +913,9 @@ index 00000000..afd09adc
 +
 +static bool IsBossScene(int sceneNum) {
 +    switch (sceneNum) {
++        case SCENE_DEKU_TREE_BOSS: // run #29, #1 (Gohma)
++        case SCENE_DODONGOS_CAVERN_BOSS: // run #29, #6 (Dodongo)
++        case SCENE_FOREST_TEMPLE_BOSS: // run #29, #13 (Phantom Ganon)
 +        case SCENE_JABU_JABU_BOSS:
 +        case SCENE_FIRE_TEMPLE_BOSS:
 +        case SCENE_WATER_TEMPLE_BOSS:
@@ -898,10 +989,40 @@ index 00000000..afd09adc
 +        sFight.fairyCount = fairies;
 +    }
 +    // Bombs / bombchus: ammo only decreases by use.
-+    if (AMMO(ITEM_BOMB) < sFight.bombAmmo || AMMO(ITEM_BOMBCHU) < sFight.bombchuAmmo) {
++    // (Run #29: track bag bombs separately from bombchus — #6 forbids
++    // only "Bombs from your bag", while bombUsed (both) is #30's rule.)
++    if (AMMO(ITEM_BOMB) < sFight.bombAmmo) {
 +        sFight.bombUsed = true;
++        sFight.bagBombUsed = true;
 +        sFight.bombAmmo = AMMO(ITEM_BOMB);
++    }
++    if (AMMO(ITEM_BOMBCHU) < sFight.bombchuAmmo) {
++        sFight.bombUsed = true;
 +        sFight.bombchuAmmo = AMMO(ITEM_BOMBCHU);
++    }
++    // Boss health, polled for #13 only (Phantom Ganon: unlock when his
++    // health reaches 2 — RA's "1 HP", 30 health = 15 HP, -2 per arrow —
++    // with only bow damage so far). The boss actor is found by scanning
++    // the boss list each frame (cheap: 1-3 actors); storing the pointer
++    // at ArmFight would go stale on a re-entry. The latch is STICKY on
++    // purpose: once he is down to 1 HP on bow damage alone, the feat is
++    // earned — the killing blow is always a sword hit (at health 2 only
++    // canKill damage lands), and it must not revoke it. The `found` guard
++    // matters: bossHealth starts at 0, which is <= 2, so an unfound actor
++    // must never trip the check.
++    if (sFight.bossActorId == ACTOR_BOSS_GANONDROF) {
++        bool found = false;
++        for (Actor* actor = play->actorCtx.actorLists[ACTORCAT_BOSS].head; actor != nullptr;
++             actor = actor->next) {
++            if (actor->id == ACTOR_BOSS_GANONDROF) {
++                sFight.bossHealth = actor->colChkInfo.health;
++                found = true;
++                break;
++            }
++        }
++        if (found && sFight.bossHealth <= 2 && !sFight.nonArrowHit) {
++            sHookFired[13] = true;
++        }
 +    }
 +    // Grabbed by an enemy (Morpha tentacle, Bongo Bongo hand).
 +    if (player->stateFlags2 & PLAYER_STATE2_GRABBED_BY_ENEMY) {
@@ -932,12 +1053,26 @@ index 00000000..afd09adc
 +    ++sFight.frames;
 +}
 +
++// Run #29: the scene of the last boss defeated (boss room), for #1013
++// (dungeon reward outside its dungeon). Medallions are awarded in the
++// Chamber of Sages, not in the boss room, so the reward's source dungeon
++// is the last boss's dungeon, not the scene where the bit appears.
++// Recorded for EVERY boss defeat (before the tracker-armed check below),
++// -1 when no boss has been defeated yet this session.
++static int sLastBossDefeatScene = -1;
++
 +// Evaluates the fight achievements for the boss that just died. The
 +// OnBossDefeat hook fires on the killing blow (same frame), before the
 +// death cutscene and before any post-fight healing, so gSaveContext.read
 +// here is the state at the moment of the win. Latches sHookFired; Tick()
 +// does the unlock + toast.
 +static void EvaluateBossDefeat(int bossActorId) {
++    // Run #29: record the defeat scene first (for #1013), even if the
++    // tracker never armed for this boss — the reward source is the last
++    // boss defeated, tracked or not.
++    if (gPlayState != nullptr) {
++        sLastBossDefeatScene = gPlayState->sceneNum;
++    }
 +    // Only judge a fight we actually tracked. (If the tracker never armed
 +    // — e.g. the boss died without its OnActorInit firing — there is
 +    // nothing reliable to judge, so nothing unlocks.)
@@ -945,6 +1080,25 @@ index 00000000..afd09adc
 +        return;
 +    }
 +    switch (bossActorId) {
++        case ACTOR_BOSS_GOMA: // Queen Gohma (run #29)
++            // #1 Spider Net: defeated before she retreated to the ceiling.
++            // The retreat is latched by Achievements_NotifyGohmaRetreat
++            // (BossGoma_SetupWallClimb). She starts on the ceiling and
++            // only climbs after dropping to the floor, so a latch means
++            // she got away at least once.
++            if (!sFight.gohmaRetreated) {
++                sHookFired[1] = true;
++            }
++            break;
++        case ACTOR_BOSS_DODONGO: // King Dodongo (run #29)
++            // #6 Bombalicious: defeated before his first fire breath, and
++            // without using Bombs from the bag (bombchus are allowed — the
++            // "bag" is ITEM_BOMB only, tracked as bagBombUsed; bombUsed
++            // combines both and belongs to #30).
++            if (!sFight.dodongoBreathedFire && !sFight.bagBombUsed) {
++                sHookFired[6] = true;
++            }
++            break;
 +        case ACTOR_BOSS_VA: // Barinade
 +            // #8 Rolling Thunder: no damage taken.
 +            if (!sFight.tookDamage) {
@@ -959,6 +1113,13 @@ index 00000000..afd09adc
 +            // #15 Hot Hot Hot: without the Goron Tunic equipped.
 +            if (CUR_EQUIP_VALUE(EQUIP_TYPE_TUNIC) != EQUIP_VALUE_TUNIC_GORON) {
 +                sHookFired[15] = true;
++            }
++            // #95 Whac-A-Mole (run #29): only the Megaton Hammer damaged
++            // him (latched by Achievements_NotifyBossHit in
++            // BossFd2_CollisionCheck), no healing, 3 hearts.
++            if (!sFight.nonHammerHit && !sFight.healed &&
++                gSaveContext.healthCapacity == 0x30) {
++                sHookFired[95] = true;
 +            }
 +            break;
 +        case ACTOR_BOSS_MO: // Morpha
@@ -994,6 +1155,23 @@ index 00000000..afd09adc
 +            if (!sFight.fell) {
 +                sHookFired[26] = true;
 +            }
++            // #98 Double Trouble (run #29): only the Master Sword damaged
++            // the merged form (latched by Achievements_NotifyBossHit in
++            // the stunned branch of the Twinrova collision check — the
++            // Mirror Shield's reflected beam only stuns, it deals no
++            // health damage), no fairy used, 3 hearts.
++            if (!sFight.nonMasterSwordHit && !sFight.fairyUsed &&
++                gSaveContext.healthCapacity == 0x30) {
++                sHookFired[98] = true;
++            }
++            break;
++        case ACTOR_BOSS_GANONDROF: // Phantom Ganon (run #29)
++            // No verdict here on purpose: #13 is judged live by the
++            // health poll in UpdateFightTracker (it must fire when his
++            // health reaches 2, before the killing sword blow), and #94
++            // has no detection at all (pre-existing gap from run #23:
++            // marked implemented but never wired — see run29-progress.md,
++            // NOT fixed in this run).
 +            break;
 +        case ACTOR_BOSS_GANON: // Ganondorf
 +            // #29 King of Thieves: never fell off the platform, no fairy used.
@@ -1020,9 +1198,19 @@ index 00000000..afd09adc
 +
 +static void RegisterFightHooks() {
 +    // Arm the tracker when a boss spawns (once per spawn, including
-+    // re-entry after a death). The painting phantoms (ACTOR_BOSS_FD) are
-+    // deliberately NOT armed: they spawn mid-fight and would reset the
-+    // tracker. Their OnBossDefeat is not listened to either.
++    // re-entry after a death).
++    // NOTE (run #29, corrected): ACTOR_BOSS_FD is NOT "the painting
++    // phantoms" — it is Volvagia's BODY (health 24, spawns the head
++    // ACTOR_BOSS_FD2 as a child). It is still deliberately NOT armed:
++    // arming it would re-arm (reset) the tracker when the head spawns.
++    // The real Phantom Ganon is ACTOR_BOSS_GANONDROF, armed below — but
++    // only in the Forest Temple boss scene, because the same actor id is
++    // also the organ-playing Ganondorf in Ganon's Castle (a different
++    // scene). The scene gate lives in UpdateFightTracker (IsBossScene
++    // disarms outside a boss scene), and the Ganondrof arm below is
++    // further guarded by checking the scene at arm time.
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_GOMA, true, [](void*) { ArmFight(ACTOR_BOSS_GOMA); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_DODONGO, true, [](void*) { ArmFight(ACTOR_BOSS_DODONGO); });
 +    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_VA, true, [](void*) { ArmFight(ACTOR_BOSS_VA); });
 +    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_FD2, true, [](void*) { ArmFight(ACTOR_BOSS_FD2); });
 +    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_MO, true, [](void*) { ArmFight(ACTOR_BOSS_MO); });
@@ -1030,7 +1218,16 @@ index 00000000..afd09adc
 +    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_TW, true, [](void*) { ArmFight(ACTOR_BOSS_TW); });
 +    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_GANON, true, [](void*) { ArmFight(ACTOR_BOSS_GANON); });
 +    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_GANON2, true, [](void*) { ArmFight(ACTOR_BOSS_GANON2); });
++    COND_ID_HOOK(OnActorInit, ACTOR_BOSS_GANONDROF, true, [](void*) {
++        // Phantom Ganon only: the same actor id is Ganondorf at the organ
++        // in Ganon's Castle, so arm only in the Forest Temple boss scene.
++        if (gPlayState != nullptr && gPlayState->sceneNum == SCENE_FOREST_TEMPLE_BOSS) {
++            ArmFight(ACTOR_BOSS_GANONDROF);
++        }
++    });
 +    // Evaluate the fight when the boss dies (killing blow, same frame).
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GOMA, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_GOMA); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_DODONGO, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_DODONGO); });
 +    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_VA, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_VA); });
 +    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_FD2, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_FD2); });
 +    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_MO, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_MO); });
@@ -1038,11 +1235,209 @@ index 00000000..afd09adc
 +    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_TW, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_TW); });
 +    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_GANON); });
 +    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANON2, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_GANON2); });
++    COND_ID_HOOK(OnBossDefeat, ACTOR_BOSS_GANONDROF, true, [](void*) { EvaluateBossDefeat(ACTOR_BOSS_GANONDROF); });
++    // #6 Bombalicious (run #29): King Dodongo's fire breath spawns an
++    // ACTOR_EN_BDFIRE, and only ever from z_boss_dodongo.c — so its first
++    // init IS the first breath. (The arm guard keeps a stray spawn from
++    // latching outside the Dodongo fight.)
++    COND_ID_HOOK(OnActorInit, ACTOR_EN_BDFIRE, true, [](void*) {
++        if (sFight.armed && sFight.bossActorId == ACTOR_BOSS_DODONGO) {
++            sFight.dodongoBreathedFire = true;
++        }
++    });
 +    // #44 Cuccos' Revenge: an attack cucco (ACTOR_EN_ATTACK_NIW) only ever
 +    // spawns as the start of a swarm (z_en_niw.c), so its first init IS the
 +    // swarm. Fires before the first peck; the design says "detect the
 +    // swarm", so that is the intended signal.
 +    COND_ID_HOOK(OnActorInit, ACTOR_EN_ATTACK_NIW, true, [](void*) { sHookFired[44] = true; });
++}
++
++// ---------------------------------------------------------------------------
++// Run #29 live trackers (called from Tick's unthrottled part, every frame)
++// ---------------------------------------------------------------------------
++// Dungeon index of a scene, for the dungeonKeys[] array and the reward
++// home-dungeon checks (1007/1013). Mirrors the mapIndex rule in
++// z_map_exp.c: a main dungeon scene's index IS its scene number
++// (0x00-0x10), a boss room's index is scene - SCENE_DEKU_TREE_BOSS
++// (0x11-0x18 -> 0-7). Anything else (overworld, Chamber of Sages,
++// Temple of Time, ...) is not a dungeon: -1.
++static int DungeonIndexOfScene(int scene) {
++    if (scene >= SCENE_DEKU_TREE && scene <= SCENE_TREASURE_BOX_SHOP) {
++        return scene;
++    }
++    if (scene >= SCENE_DEKU_TREE_BOSS && scene <= SCENE_SHADOW_TEMPLE_BOSS) {
++        return scene - SCENE_DEKU_TREE_BOSS;
++    }
++    return -1;
++}
++
++// Home dungeon (dungeonKeys index) of each dungeon reward, for #1013.
++// The Light Medallion has no dungeon home (it is Rauru's, in the Chamber
++// of Sages with no boss before it): home -2, so any boss-sourced Light
++// Medallion is out of its home.
++struct RewardHome {
++    int questBit;
++    int homeDungeon; // dungeonKeys index, or -2 for the Light Medallion
++};
++static const RewardHome kRewardHomes[] = {
++    { QUEST_MEDALLION_FOREST, SCENE_FOREST_TEMPLE },
++    { QUEST_MEDALLION_FIRE, SCENE_FIRE_TEMPLE },
++    { QUEST_MEDALLION_WATER, SCENE_WATER_TEMPLE },
++    { QUEST_MEDALLION_SPIRIT, SCENE_SPIRIT_TEMPLE },
++    { QUEST_MEDALLION_SHADOW, SCENE_SHADOW_TEMPLE },
++    { QUEST_MEDALLION_LIGHT, -2 },
++    { QUEST_KOKIRI_EMERALD, SCENE_DEKU_TREE },
++    { QUEST_GORON_RUBY, SCENE_DODONGOS_CAVERN },
++    { QUEST_ZORA_SAPPHIRE, SCENE_JABU_JABU },
++};
++
++// #1007 (key outside its dungeon) + #1013 (reward outside its dungeon).
++// Both are about WHERE an item was obtained, so they are polled every
++// frame (not in the 1.5 s throttled loop — the player could warp out
++// before the next throttle tick and the source scene would be lost).
++// The snapshots re-initialize whenever no save is loaded (title screen /
++// file select), so loading a different save never false-triggers on the
++// keys/rewards it already has.
++static void UpdateRandoPickupTracker() {
++    if (!IS_RANDO) {
++        return;
++    }
++    static bool sReady = false;
++    static s8 sPrevKeys[19] = {};
++    static u32 sPrevRewards = 0;
++    PlayState* play = gPlayState;
++    if (play == nullptr || !GameInteractor::IsSaveLoaded()) {
++        // No save loaded (title screen / file select): forget the
++        // snapshots, so the next save re-initializes them instead of
++        // comparing against a different save's keys/rewards.
++        sReady = false;
++        return;
++    }
++    if (!sReady) {
++        for (int i = 0; i < 19; ++i) {
++            sPrevKeys[i] = gSaveContext.inventory.dungeonKeys[i];
++        }
++        sPrevRewards = 0;
++        for (const RewardHome& rh : kRewardHomes) {
++            if (CHECK_QUEST_ITEM(rh.questBit)) {
++                sPrevRewards |= (1u << rh.questBit);
++            }
++        }
++        // A new save was loaded: forget the last boss defeated in the
++        // previous save, or a reward earned in this save (e.g. the
++        // vanilla Light Medallion, which has no boss before it) could
++        // false-trigger #1013 from the old save's boss. The boss defeat
++        // and its medallion always happen in one session (the blue warp
++        // is immediate, no save in between), so nothing real is lost.
++        sLastBossDefeatScene = -1;
++        sReady = true;
++        return;
++    }
++    // Source dungeon of an item obtained right now: the dungeon of the
++    // current scene when it is one (a key from a chest, a stone in its
++    // boss room), else the last boss defeated when the current scene is
++    // the Chamber of Sages (medallions are awarded there, after the blue
++    // warp). Any other non-dungeon scene -> unknown (-1), do not unlock.
++    auto sourceDungeon = [&]() -> int {
++        int fromScene = DungeonIndexOfScene(play->sceneNum);
++        if (fromScene >= 0) {
++            return fromScene;
++        }
++        if (play->sceneNum == SCENE_CHAMBER_OF_THE_SAGES && sLastBossDefeatScene >= 0) {
++            return DungeonIndexOfScene(sLastBossDefeatScene);
++        }
++        return -1;
++    };
++    // #1007: a small key count went up. Its home is its own index; the
++    // source is where the player is. (In vanilla a key is always found
++    // in its own dungeon, so this can only fire with a key shuffle.)
++    for (int i = 0; i < 19; ++i) {
++        const s8 keys = gSaveContext.inventory.dungeonKeys[i];
++        if (keys > sPrevKeys[i]) {
++            const int source = sourceDungeon();
++            if (source >= 0 && source != i) {
++                sHookFired[1007] = true;
++            }
++        }
++        sPrevKeys[i] = keys;
++    }
++    // #1013: a dungeon reward bit went up. Its home is the table above;
++    // the source is the same rule. (In vanilla a reward is always earned
++    // in its own dungeon, so this can only fire with a reward shuffle.)
++    for (const RewardHome& rh : kRewardHomes) {
++        const bool has = CHECK_QUEST_ITEM(rh.questBit) != 0;
++        const bool had = (sPrevRewards & (1u << rh.questBit)) != 0;
++        if (has && !had) {
++            if (rh.homeDungeon == -2) {
++                // Light Medallion: any boss-sourced one is out of home
++                // (vanilla has no boss before it).
++                if (sLastBossDefeatScene >= 0) {
++                    sHookFired[1013] = true;
++                }
++            } else {
++                const int source = sourceDungeon();
++                if (source >= 0 && source != rh.homeDungeon) {
++                    sHookFired[1013] = true;
++                }
++            }
++        }
++        if (has) {
++            sPrevRewards |= (1u << rh.questBit);
++        } else {
++            sPrevRewards &= ~(1u << rh.questBit);
++        }
++    }
++}
++
++// #1021 (Flawless Boss Rush): latch "damage taken during this rush".
++// Polled every frame while a Boss Rush is in progress (finish timestamp
++// still 0); a health decrease latches the CVar, which persists across
++// save/load of the same rush file and is reset only by a new Boss Rush
++// (Achievements_NotifyBossRushStart, BossRush_InitSave). Between-boss
++// damage (Chamber of Sages) has no enemies, so in practice this is the
++// boss fights — but polling the player directly covers every source.
++static void UpdateBossRushDamage() {
++    static int sLastHealth = -1;
++    if (!IS_BOSS_RUSH ||
++        gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_BOSSRUSH_FINISH] != 0) {
++        // Not in an active rush (title screen, another mode, or the rush
++        // is already finished): forget the last health, so the next rush
++        // initializes from its own starting health. A stale value from
++        // a previous attempt could be HIGHER than the new attempt's
++        // starting health and false-trigger the damage latch.
++        sLastHealth = -1;
++        return;
++    }
++    if (!GameInteractor::IsSaveLoaded()) {
++        sLastHealth = -1;
++        return;
++    }
++    const int health = gSaveContext.health;
++    if (sLastHealth < 0) {
++        sLastHealth = health;
++        return;
++    }
++    if (health < sLastHealth) {
++        CVarSetInteger(kBossRushTookDamage, 1);
++        SaveNow();
++    }
++    sLastHealth = health;
++}
++
++// #1022 (Five Seeds): count this Randomizer Ganon win once. Called from
++// Tick's END_CREDITS block; the defeat timestamp is the key, so the
++// 1.5 s re-runs during the credits cannot count one win twice.
++static void CountRandoWin() {
++    const u32 stamp = gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_DEFEAT_GANON];
++    if (stamp == 0) {
++        return;
++    }
++    if (CVarGetInteger(kLastSeedWin, 0) == (int)stamp) {
++        return;
++    }
++    CVarSetInteger(kLastSeedWin, (int)stamp);
++    CVarSetInteger(kSeedsCompleted, CVarGetInteger(kSeedsCompleted, 0) + 1);
++    SaveNow();
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -1170,13 +1565,18 @@ index 00000000..afd09adc
 +// * 1017 "all equipment" = the 12 slots of the equipment screen: 3 swords,
 +//   3 shields, 3 tunics, 3 boots. (ACHIEVEMENTS.md left the exact set
 +//   open; this is the equipment screen.)
-+// The other 9 Randomizer achievements are NOT implemented here
-+// (1001 mods, 1005 sobreprecio, 1007 llave fuera, 1009 Boss Rush,
-+// 1011 sin morir, 1012 menos de 5 h, 1013 recompensa fuera, 1021 Boss
-+// Rush sin daño, 1022 cinco seeds): they need live tracking or mods.
-+// #1023 (20 bribes) IS implemented here: its counter is meta-progression
-+// (gAchievements.BribeCount, incremented by Achievements_NotifyBribe on
-+// each bribe paid in a seed), checked in CheckRandomizer below.
++// The other 9 Randomizer achievements are implemented in run #29 (1001
++// mods, 1005 sobreprecio, 1007 llave fuera, 1009 Boss Rush, 1011 sin
++// morir, 1012 menos de 5 h, 1013 recompensa fuera, 1021 Boss Rush sin
++// daño, 1022 cinco seeds): 1001/1009/1021 are mode-exempt (see
++// CheckRandomizer), 1005 polls the shop prices, 1007/1013 are tracked
++// live by UpdateRandoPickupTracker, 1011/1012 are win achievements
++// (CheckRandoWin), 1021 is polled live by UpdateBossRushDamage, and
++// 1022 is counted once per win by CountRandoWin in Tick's END_CREDITS
++// block. #1023 (20 bribes) IS implemented here: its counter is
++// meta-progression (gAchievements.BribeCount, incremented by
++// Achievements_NotifyBribe on each bribe paid in a seed), checked in
++// CheckRandomizer below.
 +// ---------------------------------------------------------------------------
 +static bool RandoContextReady() {
 +    auto ctx = Rando::Context::GetInstance();
@@ -1237,8 +1637,68 @@ index 00000000..afd09adc
 +           CHECK_QUEST_ITEM(QUEST_ZORA_SAPPHIRE);
 +}
 +
++// #1001 Not Vanilla Anymore (run #29): at least one .o2r mod is mounted.
++// The ResourceManager mounts every .o2r/.zip/.otr/.mpq in <appdir>/mods
++// as an archive (Context.cpp, mPatchesPath). A mod archive's path
++// contains "/mods/" (the existing IsCustomArchive pattern in
++// DynamicCosmeticsEditor.cpp) and ends in ".o2r"; the base oot.o2r
++// (and oot-mq.o2r) live in <appdir>/, not in mods/. The FolderArchive
++// for the mods dir itself ends in "/mods" (no .o2r), so an empty mods
++// folder cannot false-trigger.
++static bool HasActiveMod() {
++    auto ctx = Ship::Context::GetRawInstance();
++    if (ctx == nullptr) {
++        return false;
++    }
++    auto resourceManager = ctx->GetResourceManager();
++    if (resourceManager == nullptr) {
++        return false;
++    }
++    auto archiveManager = resourceManager->GetArchiveManager();
++    if (archiveManager == nullptr) {
++        return false;
++    }
++    auto archives = archiveManager->GetArchives();
++    if (archives == nullptr) {
++        return false;
++    }
++    for (const auto& archive : *archives) {
++        if (archive == nullptr) {
++            continue;
++        }
++        const std::string& path = archive->GetPath();
++        const bool inMods = path.find("/mods/") != std::string::npos ||
++                            path.find("\\mods\\") != std::string::npos;
++        const bool isO2r = path.size() >= 4 && path.compare(path.size() - 4, 4, ".o2r") == 0;
++        if (inMods && isO2r) {
++            return true;
++        }
++    }
++    return false;
++}
++
 +static bool CheckRandomizer(int id) {
-+    // Every Randomizer achievement needs a seed loaded.
++    // MODE EXEMPTIONS (run #29): these do NOT require a Randomizer seed.
++    // * 1001 (mod): the doc says "jugar con al menos un mod activo" —
++    //   no seed mentioned, and a mod works in vanilla too.
++    // * 1009 / 1021 (Boss Rush): IS_RANDO and IS_BOSS_RUSH are mutually
++    //   exclusive quest ids (z64save.h), so a Boss Rush save can never be
++    //   IS_RANDO. They are checked here (with the other Randomizer
++    //   achievements) because they are Randomizer-category, not because
++    //   they need a seed.
++    if (id == 1001) {
++        return HasActiveMod();
++    }
++    if (id == 1009) {
++        return IS_BOSS_RUSH &&
++               gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_BOSSRUSH_FINISH] != 0;
++    }
++    if (id == 1021) {
++        return IS_BOSS_RUSH &&
++               gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_BOSSRUSH_FINISH] != 0 &&
++               CVarGetInteger(kBossRushTookDamage, 0) == 0;
++    }
++    // Every other Randomizer achievement needs a seed loaded.
 +    if (!IS_RANDO) {
 +        return false;
 +    }
@@ -1249,6 +1709,40 @@ index 00000000..afd09adc
 +            return RandoContextReady() && RandoSetting(RSK_SHUFFLE_ENTRANCES) != 0;
 +        case 1004: // Token Shuffle — seed generated with Token Shuffle.
 +            return RandoContextReady() && RandoSetting(RSK_SHUFFLE_TOKENS) != RO_TOKENSANITY_OFF;
++        case 1005: { // The price is a lie (run #29): a shop item was bought
++            // at a price above its vanilla price. Polls every shop
++            // location each throttled tick (cheap: ~20 locations) and
++            // compares the actual price with the vanilla price from the
++            // Randomizer data. With vanilla prices (RO_PRICE_VANILLA)
++            // the actual price equals the vanilla one, so it never
++            // fires — correctly.
++            if (!RandoContextReady() || OTRGlobals::Instance == nullptr ||
++                OTRGlobals::Instance->gRandomizer == nullptr) {
++                return false;
++            }
++            auto randoCtx = Rando::Context::GetInstance();
++            if (randoCtx == nullptr) {
++                return false;
++            }
++            for (RandomizerCheck check : Rando::StaticData::GetShopLocations()) {
++                if (!Flags_GetRandomizerInf(
++                        OTRGlobals::Instance->gRandomizer->GetRandomizerInfFromCheck(check))) {
++                    continue; // not bought (yet)
++                }
++                const auto itemLocation = randoCtx->GetItemLocation(check);
++                if (itemLocation == nullptr) {
++                    continue;
++                }
++                const auto location = Rando::StaticData::GetLocation(check);
++                if (location == nullptr) {
++                    continue;
++                }
++                if (itemLocation->GetPrice() > location->GetVanillaPrice()) {
++                    return true;
++                }
++            }
++            return false;
++        }
 +        case 1006: // Kokiri Sword Shuffle.
 +            return RandoContextReady() && RandoSetting(RSK_SHUFFLE_KOKIRI_SWORD) != 0;
 +        case 1014: // 100 Skulltulas in a seed.
@@ -1263,6 +1757,12 @@ index 00000000..afd09adc
 +            return CheckAllDungeonRewards();
 +        case 1019: // All masks in a seed.
 +            return CheckAllMasks();
++        case 1022: // Five Seeds (run #29): 5 Randomizer Ganon wins.
++            // The counter is incremented once per win in Tick's
++            // END_CREDITS block (CountRandoWin); this case is only the
++            // fallback for a counter already at 5 (e.g. a win counted
++            // before this build, or a counter kept across a reset).
++            return CVarGetInteger(kSeedsCompleted, 0) >= 5;
 +        case 1023: // Money Solves Everything, Twenty Times — 20 bribes in
 +            // Randomizer seeds (200 rupees in total). The counter is
 +            // meta-progression (gAchievements.BribeCount, incremented by
@@ -1273,9 +1773,9 @@ index 00000000..afd09adc
 +    }
 +}
 +
-+// Win achievements (1002, 1008, 1010, 1020): checked in Tick() before
-+// the save-loaded gate, like #31. Caller guarantees END_CREDITS and
-+// IS_RANDO. The timestamps are the discriminator (see the section
++// Win achievements (1002, 1008, 1010, 1011, 1012, 1020): checked in Tick()
++// before the save-loaded gate, like #31. Caller guarantees END_CREDITS
++// and IS_RANDO. The timestamps are the discriminator (see the section
 +// comment above): a Triforce Hunt win sets TIMESTAMP_TRIFORCE_COMPLETED
 +// and NOT TIMESTAMP_DEFEAT_GANON, so it unlocks only 1010.
 +static bool CheckRandoWin(int id) {
@@ -1299,6 +1799,17 @@ index 00000000..afd09adc
 +        }
 +        case 1010: // Wisdom, Power and Courage — Triforce Hunt win.
 +            return gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_TRIFORCE_COMPLETED] != 0;
++        case 1011: // Praise the Sun (run #29) — beat Ganon without dying
++            // once. deaths is reset to 0 on a new file (SaveManager) and
++            // incremented on every game over, so 0 at the win means the
++            // whole seed was deathless.
++            return gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_DEFEAT_GANON] != 0 &&
++                   gSaveContext.deaths == 0;
++        case 1012: // Gotta Go Fast (run #29) — beat Ganon in under 5 hours.
++            // TIMESTAMP_DEFEAT_GANON holds GAMEPLAYSTAT_TOTAL_TIME in
++            // TENTHS of a second (gameplaystats.h); 5 h = 180000 tenths.
++            return gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_DEFEAT_GANON] != 0 &&
++                   gSaveContext.ship.stats.itemTimestamp[TIMESTAMP_DEFEAT_GANON] < 180000;
 +        case 1020: // Heartless — beat Ganon with 3 hearts, no containers.
 +            // healthCapacity 0x30 = 3 hearts: no containers (each +0x10)
 +            // and no heart pieces (4 pieces = +0x10) can have been taken.
@@ -1471,10 +1982,12 @@ index 00000000..afd09adc
 +}
 +
 +// The win achievements checked before the save-loaded gate in Tick():
-+// #31 (vanilla) and the four Randomizer wins (1002, 1008, 1010, 1020).
-+// They share the END_CREDITS signal, which IsSaveLoaded() never sees.
++// #31 (vanilla) and the six Randomizer wins (1002, 1008, 1010, 1011,
++// 1012, 1020). They share the END_CREDITS signal, which IsSaveLoaded()
++// never sees.
 +static bool IsEndCreditsWin(int id) {
-+    return id == 31 || id == 1002 || id == 1008 || id == 1010 || id == 1020;
++    return id == 31 || id == 1002 || id == 1008 || id == 1010 || id == 1011 || id == 1012 ||
++           id == 1020;
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -2160,6 +2673,12 @@ index 00000000..afd09adc
 +    CheckL3R3Combo();
 +    CheckMenuInput();
 +    UpdateFightTracker();
++    // Run #29: the pickup tracker (1007/1013) and the Boss Rush damage
++    // poll (1021) are also per-frame — their signals are transient (the
++    // player can warp out of the source scene before the next throttle
++    // tick, and damage is a one-frame health drop).
++    UpdateRandoPickupTracker();
++    UpdateBossRushDamage();
 +    // Throttle: check every 30 frames. The logic runs at 20 Hz (not 60
 +    // fps — R_UPDATE_RATE = 3), so 30 frames is ~1.5 s. Achievements are
 +    // meta-progression; a 1.5 s delay is unnoticeable.
@@ -2197,16 +2716,25 @@ index 00000000..afd09adc
 +        unlock(winDef);
 +    }
 +
-+    // Randomizer win achievements (1002, 1008, 1010, 1020): same
-+    // END_CREDITS signal as #31, gated on a seed being loaded. The
++    // Randomizer win achievements (1002, 1008, 1010, 1011, 1012, 1020):
++    // same END_CREDITS signal as #31, gated on a seed being loaded. The
 +    // timestamps inside CheckRandoWin() tell a Ganon win apart from a
-+    // Triforce Hunt win.
++    // Triforce Hunt win. #1022 (Five Seeds) is counted here too: the
++    // defeat timestamp is the key, so the 1.5 s re-runs during the
++    // credits cannot count one win twice (see CountRandoWin).
 +    if (IS_RANDO && gSaveContext.gameMode == GAMEMODE_END_CREDITS) {
-+        for (int id : { 1002, 1008, 1010, 1020 }) {
++        CountRandoWin();
++        for (int id : { 1002, 1008, 1010, 1011, 1012, 1020 }) {
 +            const Def* def = FindDef(id);
 +            if (def != nullptr && def->implemented && !IsUnlocked(id) && CheckRandoWin(id)) {
 +                unlock(def);
 +            }
++        }
++        // #1022 Five Seeds: unlock as soon as the counter reaches 5.
++        const Def* fiveSeeds = FindDef(1022);
++        if (fiveSeeds != nullptr && fiveSeeds->implemented && !IsUnlocked(1022) &&
++            CVarGetInteger(kSeedsCompleted, 0) >= 5) {
++            unlock(fiveSeeds);
 +        }
 +    }
 +
@@ -2246,10 +2774,10 @@ index 00000000..afd09adc
 +} // namespace Achievements
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.h b/soh/soh/Enhancements/Achievements/Achievements.h
 new file mode 100644
-index 00000000..be20bdac
+index 00000000..e44de656
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.h
-@@ -0,0 +1,88 @@
+@@ -0,0 +1,91 @@
 +#pragma once
 +
 +#include <string>
@@ -2257,12 +2785,15 @@ index 00000000..be20bdac
 +
 +// Local achievement system for Ship of Harkinian (PS4 port, 9.3.0).
 +//
-+// Design (closed 2026-11-12): 112 local achievements, 1000 points
-+// (90 vanilla / 625 pts + 22 Randomizer / 375 pts). Local only: NOT PSN
++// Design (closed 2026-11-12): 113 local achievements, 1005 points
++// (90 vanilla / 625 pts + 23 Randomizer / 380 pts). Local only: NOT PSN
 +// trophies, NOT synced to RetroAchievements. Meta-progression: unlocks
 +// persist across saves and seeds and give no gameplay advantage.
-+// Each achievement carries title + description in EN and ES; the display
-+// language is chosen in the Logros menu (gAchievements.Language).
++// Implemented (run #29): 112/113, 1000/1005 pts — 89 vanilla / 620 pts
++// + 23 Randomizer / 380 pts. #46 (Walking on a Tightrope, 5 pts) stays
++// unimplemented by Lux's decision. Each achievement carries title +
++// description in EN and ES; the display language is chosen in the
++// Logros menu (gAchievements.Language).
 +// The 14 story achievements (13 progression + 1 win condition) are hidden
 +// ("???") until unlocked, and can be revealed by tapping them (spoiler
 +// warning). Visual rewards (slot, titles, Triforce, logo, HUD, secret
@@ -2340,10 +2871,10 @@ index 00000000..be20bdac
 +} // namespace Achievements
 diff --git a/soh/soh/Enhancements/Achievements/AchievementsNotify.h b/soh/soh/Enhancements/Achievements/AchievementsNotify.h
 new file mode 100644
-index 00000000..4b30c591
+index 00000000..a6808cfa
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/AchievementsNotify.h
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,35 @@
 +#pragma once
 +// Bridge so C actor code can report an achievement event to the C++
 +// Achievements module. The call only latches a pending flag; Tick()
@@ -2357,11 +2888,25 @@ index 00000000..4b30c591
 +//   #1023 Money Solves Everything, Twenty Times — z_en_heishi2.c, same bribe
 +//     call site; counts bribes paid in Randomizer seeds toward the 20-bribe
 +//     total (see Achievements_NotifyBribe in Achievements.cpp).
++//
++// Hook points (run #29, DIFÍCIL + Boss Rush):
++//   #1 Spider Net — z_boss_goma.c, when Gohma starts climbing the wall
++//     back to the ceiling (BossGoma_SetupWallClimb).
++//   #13 Drunken Master / #95 Whac-A-Mole / #98 Double Trouble — the boss
++//     actors report every hit that actually reduces their health, with
++//     the toucher's dmgFlags (BossGanondrof_CollisionCheck, 2 sites;
++//     BossFd2_CollisionCheck, 2 sites; the merged Twinrova's stunned
++//     branch). See Achievements_NotifyBossHit in Achievements.cpp.
++//   #1021 Flawless Boss Rush — BossRush.cpp, when a new Boss Rush file is
++//     created (BossRush_InitSave); resets the damage flag for the attempt.
 +#ifdef __cplusplus
 +extern "C" {
 +#endif
 +void Achievements_NotifyHook(int achievementId);
 +void Achievements_NotifyBribe(void);
++void Achievements_NotifyBossHit(unsigned int dmgFlags); // u32; spelled out so the header compiles in C++ before the C headers define u32
++void Achievements_NotifyGohmaRetreat(void);
++void Achievements_NotifyBossRushStart(void);
 +#ifdef __cplusplus
 +}
 +#endif
@@ -2408,6 +2953,30 @@ index baf3dc26..a1a5e30c 100644
 +    CVarRegisterInteger(CVAR_IMGUI_CONTROLLER_NAV, 1); // always enable controller nav on consoles
  #endif
  }
+diff --git a/soh/soh/Enhancements/boss-rush/BossRush.cpp b/soh/soh/Enhancements/boss-rush/BossRush.cpp
+index edaa5d10..e07d91fe 100644
+--- a/soh/soh/Enhancements/boss-rush/BossRush.cpp
++++ b/soh/soh/Enhancements/boss-rush/BossRush.cpp
+@@ -11,6 +11,7 @@
+ #include "soh/ShipInit.hpp"
+ #include "soh/Enhancements/game-interactor/GameInteractor.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ #include "soh/frame_interpolation.h"
+ 
+ extern "C" {
+@@ -491,6 +492,11 @@ void BossRush_HandleCompleteBoss(PlayState* play) {
+ }
+ 
+ extern "C" void BossRush_InitSave() {
++    // Run #29, #1021 Flawless Boss Rush: a new Boss Rush file was
++    // created — reset the damage flag so this attempt starts clean.
++    // Loading an existing file does not call InitSave, so mid-rush
++    // save/load keeps the flag.
++    Achievements_NotifyBossRushStart();
+ 
+     // Set player name to Link using PAL charset for few textboxes that show up during Boss Rush.
+     static const u8 brPlayerName[] = { 0x15, 0x12, 0x17, 0x14, 0x3E, 0x3E, 0x3E, 0x3E };
 diff --git a/soh/soh/Enhancements/randomizer/3drando/spoiler_log.cpp b/soh/soh/Enhancements/randomizer/3drando/spoiler_log.cpp
 index 49d0fe43..9eb39a08 100644
 --- a/soh/soh/Enhancements/randomizer/3drando/spoiler_log.cpp
@@ -4186,6 +4755,132 @@ index 98c63266..45b64b13 100644
  #else //_WIN32
  int main(int argc, char* argv[]) {
  #endif
+diff --git a/soh/src/overlays/actors/ovl_Boss_Fd2/z_boss_fd2.c b/soh/src/overlays/actors/ovl_Boss_Fd2/z_boss_fd2.c
+index 55dfe4d2..0ab4cada 100644
+--- a/soh/src/overlays/actors/ovl_Boss_Fd2/z_boss_fd2.c
++++ b/soh/src/overlays/actors/ovl_Boss_Fd2/z_boss_fd2.c
+@@ -11,6 +11,7 @@
+ #include "vt.h"
+ #include "soh/frame_interpolation.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ 
+ #define FLAGS                                                                                 \
+     (ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_HOSTILE | ACTOR_FLAG_UPDATE_CULLING_DISABLED | \
+@@ -845,6 +846,11 @@ void BossFd2_CollisionCheck(BossFd2* this, PlayState* play) {
+         if (!bossFd->faceExposed) {
+             if (hurtbox->toucher.dmgFlags & 0x40000040) {
+                 bossFd->actor.colChkInfo.health -= 2;
++                // Run #29, #95 Whac-A-Mole: the face-hidden hit is always
++                // a hammer hit (the 0x40000040 gate above IS DMG_HAMMER),
++                // so this notify is a no-op for the latch — it is here so
++                // every health decrease reports, in one place.
++                Achievements_NotifyBossHit(hurtbox->toucher.dmgFlags);
+                 if ((s8)bossFd->actor.colChkInfo.health <= 2) {
+                     bossFd->actor.colChkInfo.health = 1;
+                 }
+@@ -884,6 +890,13 @@ void BossFd2_CollisionCheck(BossFd2* this, PlayState* play) {
+             }
+             if (((s8)bossFd->actor.colChkInfo.health > 2) || canKill) {
+                 bossFd->actor.colChkInfo.health -= damage;
++                // Run #29, #95 Whac-A-Mole: report the hit that actually
++                // reduced his health. Only inside this guard does health
++                // decrease, and only when damage > 0 (the hookshot sets
++                // damage 0 above and must not disqualify).
++                if (damage > 0) {
++                    Achievements_NotifyBossHit(hurtbox->toucher.dmgFlags);
++                }
+                 osSyncPrintf(VT_FGCOL(GREEN));
+                 osSyncPrintf("damage   %d\n", damage);
+             }
+diff --git a/soh/src/overlays/actors/ovl_Boss_Ganondrof/z_boss_ganondrof.c b/soh/src/overlays/actors/ovl_Boss_Ganondrof/z_boss_ganondrof.c
+index 8f7b9666..8b222951 100644
+--- a/soh/src/overlays/actors/ovl_Boss_Ganondrof/z_boss_ganondrof.c
++++ b/soh/src/overlays/actors/ovl_Boss_Ganondrof/z_boss_ganondrof.c
+@@ -13,6 +13,7 @@
+ #include "overlays/actors/ovl_Door_Warp1/z_door_warp1.h"
+ #include "soh/OTRGlobals.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ 
+ #define FLAGS                                                                                 \
+     (ACTOR_FLAG_ATTENTION_ENABLED | ACTOR_FLAG_HOSTILE | ACTOR_FLAG_UPDATE_CULLING_DISABLED | \
+@@ -1221,6 +1222,12 @@ void BossGanondrof_CollisionCheck(BossGanondrof* this, PlayState* play) {
+                         (dmg == 0) ? (dmg = 2) : (canKill = true);
+                         if (((s8)this->actor.colChkInfo.health > 2) || canKill) {
+                             this->actor.colChkInfo.health -= dmg;
++                            // Run #29, #13 Drunken Master: report the hit
++                            // that actually reduced his health, with the
++                            // toucher's dmgFlags. Only a hit inside this
++                            // guard reduces health (dmg is always >= 2
++                            // here; the hookshot early-returned above).
++                            Achievements_NotifyBossHit(dmgFlags);
+                         }
+ 
+                         if ((s8)this->actor.colChkInfo.health <= 0) {
+@@ -1243,6 +1250,9 @@ void BossGanondrof_CollisionCheck(BossGanondrof* this, PlayState* play) {
+             } else if (acHit && (hurtbox->toucher.dmgFlags & 0x0001F8A4)) {
+                 this->work[GND_INVINC_TIMER] = 10;
+                 this->actor.colChkInfo.health -= 2;
++                // Run #29, #13 Drunken Master: a painting hit always
++                // reduces health by 2 (no clamp, no death check here).
++                Achievements_NotifyBossHit(hurtbox->toucher.dmgFlags);
+                 horse->hitTimer = 20;
+                 Audio_PlayActorSound2(&this->actor, NA_SE_EN_FANTOM_DAMAGE);
+             }
+diff --git a/soh/src/overlays/actors/ovl_Boss_Goma/z_boss_goma.c b/soh/src/overlays/actors/ovl_Boss_Goma/z_boss_goma.c
+index f3b922d2..906ebbc6 100644
+--- a/soh/src/overlays/actors/ovl_Boss_Goma/z_boss_goma.c
++++ b/soh/src/overlays/actors/ovl_Boss_Goma/z_boss_goma.c
+@@ -6,6 +6,7 @@
+ #include "overlays/actors/ovl_Door_Warp1/z_door_warp1.h"
+ #include "soh/OTRGlobals.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ #include <libultraship/bridge/consolevariablebridge.h>
+ 
+ #define FLAGS                                                                                 \
+@@ -489,6 +490,11 @@ void BossGoma_SetupCeilingPrepareSpawnGohmas(BossGoma* this) {
+ }
+ 
+ void BossGoma_SetupWallClimb(BossGoma* this) {
++    // Run #29, #1 Spider Net: Gohma is retreating to the ceiling. This is
++    // the single place the climb begins (called when she touches a wall
++    // on the floor); the tracker latches it and #1 only unlocks if she
++    // never got away.
++    Achievements_NotifyGohmaRetreat();
+     Animation_Change(&this->skelanime, &gGohmaClimbAnim, 1.0f, 0.0f, Animation_GetLastFrame(&gGohmaClimbAnim),
+                      ANIMMODE_LOOP, -10.0f);
+     this->actionFunc = BossGoma_WallClimb;
+diff --git a/soh/src/overlays/actors/ovl_Boss_Tw/z_boss_tw.c b/soh/src/overlays/actors/ovl_Boss_Tw/z_boss_tw.c
+index 5ecaaf9b..99f6eb19 100644
+--- a/soh/src/overlays/actors/ovl_Boss_Tw/z_boss_tw.c
++++ b/soh/src/overlays/actors/ovl_Boss_Tw/z_boss_tw.c
+@@ -5,6 +5,7 @@
+ #include "overlays/actors/ovl_Door_Warp1/z_door_warp1.h"
+ #include "soh/frame_interpolation.h"
+ #include "soh/Enhancements/game-interactor/GameInteractor_Hooks.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h"
+ #include "soh/Enhancements/savestate_serialize.h"
+ 
+ #include <string.h>
+@@ -3096,6 +3097,16 @@ void BossTw_TwinrovaUpdate(Actor* thisx, PlayState* play2) {
+                     damage = 0;
+                 }
+ 
++                // Run #29, #98 Double Trouble: report the hit that
++                // actually reduced her health. Only when damage > 0
++                // (a 0 here means no health decrease: the health < 3
++                // non-sword case). The hookshot never reaches this
++                // branch, and the Mirror Shield's reflected beam only
++                // stuns — it deals no health damage, so it needs no
++                // notify.
++                if (damage > 0) {
++                    Achievements_NotifyBossHit(info->toucher.dmgFlags);
++                }
+                 BossTw_TwinrovaDamage(this, play, damage);
+             }
+         }
 diff --git a/soh/src/overlays/actors/ovl_En_Cow/z_en_cow.c b/soh/src/overlays/actors/ovl_En_Cow/z_en_cow.c
 index c993d03b..64bec313 100644
 --- a/soh/src/overlays/actors/ovl_En_Cow/z_en_cow.c
