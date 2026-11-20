@@ -2697,7 +2697,7 @@ index cb7e5063..176312e5 100644
  
  class Window final : public Ship::GuiWindow {
 diff --git a/soh/soh/OTRGlobals.cpp b/soh/soh/OTRGlobals.cpp
-index 1b4f62c4..0db96ca4 100644
+index 1b4f62c4..d8f33d7d 100644
 --- a/soh/soh/OTRGlobals.cpp
 +++ b/soh/soh/OTRGlobals.cpp
 @@ -9,6 +9,7 @@
@@ -2824,7 +2824,7 @@ index 1b4f62c4..0db96ca4 100644
  
      // The menu is set up before audio is initialized, so its list of available audio backends has to be
      // populated here rather than in Menu::InitElement (where the window backends are handled).
-@@ -1060,18 +1147,82 @@ void OTRAudio_Thread() {
+@@ -1060,18 +1147,94 @@ void OTRAudio_Thread() {
  #define AUDIO_FRAMES_PER_UPDATE (R_UPDATE_RATE > 0 ? R_UPDATE_RATE : 1)
  #define NUM_AUDIO_CHANNELS 2
  
@@ -2844,13 +2844,21 @@ index 1b4f62c4..0db96ca4 100644
 +        // gaps). At most 6 buffers per push (6 x 560 = 3360 frames = 105 ms,
 +        // logical frames down to ~9.5 Hz); the credit is capped to the same
 +        // bound so a long stall (load, boot) cannot build an unbounded debt.
++        // Run #28: the wall clock is SDL_GetPerformanceCounter, NOT
++        // std::chrono::steady_clock. The #27 console log (FE92A401) proved
++        // steady_clock reads ~half the real time on this PS4 (~28 ms measured
++        // vs ~50 ms real between pushes), so the credit produced ~half the
++        // audio and the music sounded slow and choppy at 40 and 60 fps.
++        // SDL_GetPerformanceCounter is the same clock SyncFramerateWithTime
++        // uses and is proven correct on console (frames at exactly 40.0/60.0).
 +        // TEMP DIAG (run #27): a ~1/s line with the queue level, HIGH/LOW,
 +        // wall time between pushes and buffers produced. Remove the statics
 +        // and the log line below when the fix is confirmed on console.
 +        constexpr int kAudioMaxBuffersPerPush = 6;
 +        constexpr int64_t kAudioCreditCapMilli = (int64_t)kAudioMaxBuffersPerPush * SAMPLES_HIGH * 1000;
 +
-+        static std::chrono::steady_clock::time_point sAudioLastPush;
++        static Uint64 sAudioLastPush = 0; // SDL performance counter ticks (run #28)
++        static const Uint64 sAudioPerfFreq = SDL_GetPerformanceFrequency();
 +        static int64_t sAudioCreditMilli = 0; // frames owed, in milli-frames
 +        static bool sAudioFirstPush = true;
 +        static int sAudioPushCount = 0; // TEMP DIAG (run #27)
@@ -2867,12 +2875,16 @@ index 1b4f62c4..0db96ca4 100644
 +            // Prime the queue like the old code and start the wall clock
 +            // here, so a late first push cannot owe a huge debt.
 +            sAudioFirstPush = false;
-+            sAudioLastPush = std::chrono::steady_clock::now();
++            sAudioLastPush = SDL_GetPerformanceCounter();
 +            num_buffers = AUDIO_FRAMES_PER_UPDATE;
 +        } else {
-+            auto now = std::chrono::steady_clock::now();
-+            elapsed_us = std::chrono::duration_cast<std::chrono::microseconds>(now - sAudioLastPush).count();
++            Uint64 now = SDL_GetPerformanceCounter();
++            Uint64 delta = now - sAudioLastPush;
 +            sAudioLastPush = now;
++            // Ticks -> microseconds, dividing before multiplying (same form
++            // as qpc_to_100ns in gfx_sdl2.cpp) to avoid overflow.
++            elapsed_us = (int64_t)(delta / sAudioPerfFreq * 1000000ULL +
++                                   delta % sAudioPerfFreq * 1000000ULL / sAudioPerfFreq);
 +            // Frames owed in milli-frames: elapsed_us * 32000 / 1e6 * 1000
 +            // = elapsed_us * 32.
 +            sAudioCreditMilli += elapsed_us * 32;
@@ -2911,7 +2923,7 @@ index 1b4f62c4..0db96ca4 100644
  
          audio.processing = false;
          audio.cv_from_thread.notify_one();
-@@ -1478,7 +1629,12 @@ OTRVersion DetectOTRVersion(std::string fileName, bool isMQ) {
+@@ -1478,7 +1641,12 @@ OTRVersion DetectOTRVersion(std::string fileName, bool isMQ) {
  }
  
  extern "C" void Messagebox_ShowErrorBox(char* title, char* body) {
