@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..5d2c43e1
+index 00000000..3d0130c1
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,2649 @@
+@@ -0,0 +1,2880 @@
 +#include "Achievements.h"
 +#include "AchievementsNotify.h"
 +
@@ -146,6 +146,8 @@ index 00000000..5d2c43e1
 +#include "variables.h"
 +#include "z64collision_check.h" // DMG_HAMMER / DMG_ARROW / DMG_SLASH_MASTER (boss-hit attribution, run #29)
 +#include "z64save.h"
++#include "sfx.h"      // NA_SE_SY_CORRECT_CHIME (unlock jingle, run #30)
++#include "sequence.h" // NA_BGM_MEDALLION_GET (completion fanfare, run #30)
 +}
 +
 +// Current PlayState (defined in z_play.c); null outside gameplay.
@@ -196,7 +198,16 @@ index 00000000..5d2c43e1
 +// ---------------------------------------------------------------------------
 +// Icons (OTR texture paths, verified against
 +// soh/assets/textures/icon_item_24_static/ and the Randomizer hash table).
-+// Only set where the icon is known; nullptr elsewhere (art pass later).
++// Run #30: 86 achievements carry a game icon (61 distinct ICON_*
++// constants, 8 pre-existing + 53 added here); the other 27 keep nullptr
++// — their pixel-art icons live in files/logros-iconos/ and are NOT
++// embedded yet (see run30-research-textures.md). The 2 constants
++// ICON_BOTTLE_FAIRY and ICON_DINS_FIRE from ICONOS.md are deliberately
++// NOT added: no achievement uses them since the 2026-11-17 reassignments.
++// At boot, RegisterAchievementIcons() (ImGuiUtils.cpp) preloads every
++// non-null icon under its own __OTR__ path as the cache key, so the
++// toast (Notification.cpp) and the Logros menu find them via
++// GetTextureByName(def->icon).
 +// ---------------------------------------------------------------------------
 +static const char* ICON_KOKIRI_EMERALD =
 +    "__OTR__textures/icon_item_24_static/gQuestIconKokiriEmeraldTex";
@@ -213,9 +224,62 @@ index 00000000..5d2c43e1
 +    "__OTR__textures/icon_item_24_static/gQuestIconMedallionSpiritTex";
 +static const char* ICON_MEDALLION_SHADOW =
 +    "__OTR__textures/icon_item_24_static/gQuestIconMedallionShadowTex";
++static const char* ICON_ADULTS_WALLET = "__OTR__textures/icon_item_static/gItemIconAdultsWalletTex";
++static const char* ICON_ARROW_FIRE = "__OTR__textures/icon_item_static/gItemIconArrowFireTex";
++static const char* ICON_ARROW_ICE = "__OTR__textures/icon_item_static/gItemIconArrowIceTex";
++static const char* ICON_BOMB = "__OTR__textures/icon_item_static/gItemIconBombTex";
++static const char* ICON_BOMBCHU = "__OTR__textures/icon_item_static/gItemIconBombchuTex";
++static const char* ICON_BOOTS_HOVER = "__OTR__textures/icon_item_static/gItemIconBootsHoverTex";
++static const char* ICON_BOOTS_IRON = "__OTR__textures/icon_item_static/gItemIconBootsIronTex";
++static const char* ICON_BOOTS_KOKIRI = "__OTR__textures/icon_item_static/gItemIconBootsKokiriTex";
++static const char* ICON_BOTTLE_BIG_POE = "__OTR__textures/icon_item_static/gItemIconBottleBigPoeTex";
++static const char* ICON_BOTTLE_FISH = "__OTR__textures/icon_item_static/gItemIconBottleFishTex";
++static const char* ICON_BOTTLE_MILK_FULL = "__OTR__textures/icon_item_static/gItemIconBottleMilkFullTex";
++static const char* ICON_BOTTLE_POE = "__OTR__textures/icon_item_static/gItemIconBottlePoeTex";
++static const char* ICON_BOW = "__OTR__textures/icon_item_static/gItemIconBowTex";
++static const char* ICON_BOW_FIRE = "__OTR__textures/icon_item_static/gItemIconBowFireTex";
++static const char* ICON_CHICKEN = "__OTR__textures/icon_item_static/gItemIconChickenTex";
++static const char* ICON_DEKU_NUT = "__OTR__textures/icon_item_static/gItemIconDekuNutTex";
++static const char* ICON_DUNGEON_MAP = "__OTR__textures/icon_item_24_static/gQuestIconDungeonMapTex";
++static const char* ICON_FISHING_POLE = "__OTR__textures/icon_item_static/gItemIconFishingPoleTex";
++static const char* ICON_GERUDOS_CARD = "__OTR__textures/icon_item_24_static/gQuestIconGerudosCardTex";
++static const char* ICON_GOLDEN_GAUNTLETS = "__OTR__textures/icon_item_static/gItemIconGoldenGauntletsTex";
++static const char* ICON_GOLD_SKULLTULA = "__OTR__textures/icon_item_24_static/gQuestIconGoldSkulltulaTex";
++static const char* ICON_GORONS_BRACELET = "__OTR__textures/icon_item_static/gItemIconGoronsBraceletTex";
++static const char* ICON_HAMMER = "__OTR__textures/icon_item_static/gItemIconHammerTex";
++static const char* ICON_HEART_CONTAINER = "__OTR__textures/icon_item_24_static/gQuestIconHeartContainerTex";
++static const char* ICON_HOOKSHOT = "__OTR__textures/icon_item_static/gItemIconHookshotTex";
++static const char* ICON_LENS_OF_TRUTH = "__OTR__textures/icon_item_static/gItemIconLensOfTruthTex";
++static const char* ICON_MAGIC_BEAN = "__OTR__textures/icon_item_static/gItemIconMagicBeanTex";
++static const char* ICON_MASK_BUNNY_HOOD = "__OTR__textures/icon_item_static/gItemIconMaskBunnyHoodTex";
++static const char* ICON_MASK_GERUDO = "__OTR__textures/icon_item_static/gItemIconMaskGerudoTex";
++static const char* ICON_MASK_KEATON = "__OTR__textures/icon_item_static/gItemIconMaskKeatonTex";
++static const char* ICON_MASK_SKULL = "__OTR__textures/icon_item_static/gItemIconMaskSkullTex";
++static const char* ICON_MASK_SPOOKY = "__OTR__textures/icon_item_static/gItemIconMaskSpookyTex";
++static const char* ICON_MASK_TRUTH = "__OTR__textures/icon_item_static/gItemIconMaskTruthTex";
++static const char* ICON_MEDALLION_LIGHT = "__OTR__textures/icon_item_24_static/gQuestIconMedallionLightTex";
++static const char* ICON_NAYRUS_LOVE = "__OTR__textures/icon_item_static/gItemIconNayrusLoveTex";
++static const char* ICON_OCARINA_FAIRY = "__OTR__textures/icon_item_static/gItemIconOcarinaFairyTex";
++static const char* ICON_OCARINA_OF_TIME = "__OTR__textures/icon_item_static/gItemIconOcarinaOfTimeTex";
++static const char* ICON_POACHERS_SAW = "__OTR__textures/icon_item_static/gItemIconPoachersSawTex";
++static const char* ICON_POCKET_CUCCO = "__OTR__textures/icon_item_static/gItemIconPocketCuccoTex";
++static const char* ICON_SCALE_GOLDEN = "__OTR__textures/icon_item_static/gItemIconScaleGoldenTex";
++static const char* ICON_SCALE_SILVER = "__OTR__textures/icon_item_static/gItemIconScaleSilverTex";
++static const char* ICON_SHIELD_HYLIAN = "__OTR__textures/icon_item_static/gItemIconShieldHylianTex";
++static const char* ICON_SHIELD_MIRROR = "__OTR__textures/icon_item_static/gItemIconShieldMirrorTex";
++static const char* ICON_SILVER_GAUNTLETS = "__OTR__textures/icon_item_static/gItemIconSilverGauntletsTex";
++static const char* ICON_SLINGSHOT = "__OTR__textures/icon_item_static/gItemIconSlingshotTex";
++static const char* ICON_SMALL_KEY = "__OTR__textures/icon_item_24_static/gQuestIconSmallKeyTex";
++static const char* ICON_SOLD_OUT = "__OTR__textures/icon_item_static/gItemIconSoldOutTex";
++static const char* ICON_SONG_NOTE = "__OTR__textures/icon_item_static/gSongNoteTex";
++static const char* ICON_SWORD_BIGGORON = "__OTR__textures/icon_item_static/gItemIconSwordBiggoronTex";
++static const char* ICON_SWORD_KOKIRI = "__OTR__textures/icon_item_static/gItemIconSwordKokiriTex";
++static const char* ICON_SWORD_MASTER = "__OTR__textures/icon_item_static/gItemIconSwordMasterTex";
++static const char* ICON_TUNIC_GORON = "__OTR__textures/icon_item_static/gItemIconTunicGoronTex";
++static const char* ICON_ZELDAS_LETTER = "__OTR__textures/icon_item_static/gItemIconZeldasLetterTex";
 +
 +// ---------------------------------------------------------------------------
-+// Registry: all 112 achievements.
++// Registry: all 113 achievements.
 +// Vanilla ids are the RetroAchievements numbers (the 7 cuts approved by Lux
 +// leave gaps: 41, 47, 59, 82, 84, 92, 100). Randomizer ids are 1000 + n.
 +// "implemented" is true for the 98 achievements with verified detection
@@ -231,21 +295,21 @@ index 00000000..5d2c43e1
 +    // ---- Vanilla (90, 625 pts) ----
 +    // id, titleEn, titleEs, descEn, descEs, points, category, type, hidden, icon, implemented
 +    { 1, "Spider Net", "Red de araña", "Defeat Queen Gohma before she can retreat to the ceiling.",
-+      "Vence a la Reina Gohma antes de que se retire al techo.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
++      "Vence a la Reina Gohma antes de que se retire al techo.", 10, Category::Vanilla, Type::Missable, false, ICON_GOLD_SKULLTULA, true },
 +    { 2, "Entrusted Mission", "Misión encomendada", "Receive the Spiritual Stone of the Forest.",
 +      "Recibe la Piedra Espiritual del Bosque.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_KOKIRI_EMERALD, true },
 +    { 3, "Rise and Shine!!", "¡Arriba, dormilón!", "Wake up Talon.",
-+      "Despierta a Talon.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Despierta a Talon.", 5, Category::Vanilla, Type::None, false, ICON_POCKET_CUCCO, true },
 +    { 4, "A Royal Autograph", "Un autógrafo real", "Meet Princess Zelda for the first time.",
 +      "Conoce a la princesa Zelda por primera vez.", 5, Category::Vanilla, Type::Progression, true,
-+      nullptr, true },
++      ICON_ZELDAS_LETTER, true },
 +    { 5, "Dance Into the Fire", "Baila con el fuego", "Receive the Goron Bracelet from Darunia.",
 +      "Recibe el brazalete de Darunia en la Ciudad Goron.", 5, Category::Vanilla, Type::Progression,
-+      true, nullptr, true },
++      true, ICON_GORONS_BRACELET, true },
 +    { 6, "Bombalicious", "Explosión de sabor", "Defeat King Dodongo before he breathes fire without using Bombs from your bag.",
 +      "Vence al Rey Dodongo antes de que escupa fuego sin usar bombas de tu bolsa.", 10, Category::Vanilla, Type::Missable, false,
-+      nullptr, true },
++      ICON_BOMB, true },
 +    { 7, "Soul Brothers", "Hermanos del alma", "Receive the Spiritual Stone of Fire.",
 +      "Recibe la Piedra Espiritual del Fuego.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_GORON_RUBY, true },
@@ -257,29 +321,29 @@ index 00000000..5d2c43e1
 +      ICON_ZORA_SAPPHIRE, true },
 +    { 10, "Damsel in Distress", "Damisa en apuros", "Receive the Ocarina of Time from Zelda.",
 +      "Recibe la Ocarina del Tiempo de Zelda.", 5, Category::Vanilla, Type::Progression, true,
-+      nullptr, true },
++      ICON_OCARINA_OF_TIME, true },
 +    { 11, "Hero of Time", "Héroe del Tiempo", "Pull the Master Sword from its pedestal.",
 +      "Saca la Espada Maestra de su pedestal.", 5, Category::Vanilla, Type::Progression, true,
-+      nullptr, true },
++      ICON_SWORD_MASTER, true },
 +    { 12, "The Great Escape", "La gran escapada", "Escape Hyrule Castle with Zelda.",
 +      "Escapa del castillo de Hyrule con Zelda.", 5, Category::Vanilla, Type::None, false, nullptr,
 +      true },
 +    { 13, "Drunken Master", "Maestro borracho", "Lower Phantom Ganon to 1 HP by using only the Bow and Bottles.",
-+      "Baja a Ganon Fantasma a 1 HP usando solo el arco y las botellas.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      "Baja a Ganon Fantasma a 1 HP usando solo el arco y las botellas.", 10, Category::Vanilla, Type::Missable, false, ICON_CHICKEN,
 +      true },
 +    { 14, "Awakening", "Despertar", "Awaken the Forest Sage.",
 +      "Despierta a la Sabia del Bosque.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_FOREST, true },
 +    { 15, "Hot Hot Hot", "¡Estoy que ardo!", "Defeat Volvagia without wearing the Goron Tunic.",
-+      "Vence a Volvagia sin llevar la túnica Goron.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
++      "Vence a Volvagia sin llevar la túnica Goron.", 10, Category::Vanilla, Type::Missable, false, ICON_TUNIC_GORON, true },
 +    { 16, "Eternal Brothers", "Hermanos eternos", "Awaken the Fire Sage.",
 +      "Despierta al Sabio del Fuego.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_FIRE, true },
 +    { 17, "Bring Me to the Bottom of the Oceans", "Llévame al fondo del océano",
 +      "Sink to the bottom of Lake Hylia.", "Húndete hasta el fondo del lago Hylia.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, true },
++      Category::Vanilla, Type::None, false, ICON_BOOTS_IRON, true },
 +    { 18, "A Breath of Fresh Air", "Un soplo de aire fresco", "Get some air after diving.",
-+      "Respira después de bucear.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Respira después de bucear.", 5, Category::Vanilla, Type::None, false, ICON_SCALE_SILVER, true },
 +    { 19, "Day of the Tentacles", "El día de los tentáculos",
 +      "Defeat Morpha without falling into the water or getting captured by its tentacle.",
 +      "Vence a Morpha sin caer al agua ni que te atrape un tentáculo.", 10, Category::Vanilla, Type::Missable,
@@ -288,19 +352,19 @@ index 00000000..5d2c43e1
 +      "Despierta a la Sabia del Agua.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_WATER, true },
 +    { 21, "Invisible One", "El invisible", "Defeat Bongo Bongo without using the Lens of Truth or getting trapped by his hands.",
-+      "Vence a Bongo Bongo sin usar la Lente de la Verdad ni que te atrapen sus manos.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      "Vence a Bongo Bongo sin usar la Lente de la Verdad ni que te atrapen sus manos.", 10, Category::Vanilla, Type::Missable, false, ICON_LENS_OF_TRUTH,
 +      true },
 +    { 22, "The Shadow of the Hylians", "La sombra de los hylianos", "Awaken the Shadow Sage.",
 +      "Despierta al Sabio de las Sombras.", 5, Category::Vanilla, Type::Progression, true,
 +      ICON_MEDALLION_SHADOW, true },
 +    { 23, "Gerudo's Fan Club", "Club de fans gerudo", "Get caught by a Gerudo guard.",
-+      "Que te atrape una guardia Gerudo.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Que te atrape una guardia Gerudo.", 5, Category::Vanilla, Type::None, false, ICON_MASK_GERUDO, true },
 +    { 24, "A Horrible Face", "Una cara horrible", "Get a horrible face in the Gerudo Fortress.",
 +      "Que te pongan una cara horrible en la Fortaleza Gerudo.", 5, Category::Vanilla,
-+      Type::Missable, false, nullptr, true },
++      Type::Missable, false, ICON_MASK_SPOOKY, true },
 +    { 25, "Infamous Silver Gauntlets", "Los infames guanteletes de plata",
 +      "Obtain the Silver Gauntlets.", "Consigue los Guanteletes de Plata.", 5, Category::Vanilla,
-+      Type::None, false, nullptr, true },
++      Type::None, false, ICON_SILVER_GAUNTLETS, true },
 +    { 26, "Twins of Evil", "Gemelas del mal", "Defeat the Twinrova Sisters without falling from the platform.",
 +      "Vence a las hermanas Twinrova sin caer de la plataforma.", 10, Category::Vanilla, Type::Missable, false,
 +      nullptr, true },
@@ -309,45 +373,45 @@ index 00000000..5d2c43e1
 +      ICON_MEDALLION_SPIRIT, true },
 +    { 28, "To the Rescue", "Al rescate", "Save a Carpenter from the Gerudo Fortress.",
 +      "Rescata a un carpintero de la Fortaleza Gerudo.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, true },
++      ICON_POACHERS_SAW, true },
 +    { 29, "King of Thieves", "Rey de los ladrones", "Defeat Ganondorf without falling or climbing down the platform and without using Fairies.",
 +      "Vence a Ganondorf sin caer ni bajar de la plataforma y sin usar hadas.", 10, Category::Vanilla, Type::None, false,
-+      nullptr, true },
++      ICON_GERUDOS_CARD, true },
 +    { 30, "My Last Breath", "Mi último aliento", "Defeat Ganon with 1 heart or less remaining, without using Fairies or Bombs.",
-+      "Vence a Ganon con 1 corazón o menos, sin usar hadas ni bombas.", 10, Category::Vanilla, Type::None, false, nullptr,
++      "Vence a Ganon con 1 corazón o menos, sin usar hadas ni bombas.", 10, Category::Vanilla, Type::None, false, ICON_HEART_CONTAINER,
 +      true },
 +    { 31, "Home Sweet Home", "Hogar, dulce hogar", "Banish Ganon to the void of the Evil Realm.",
 +      "Destierra a Ganon al vacío del Reino del Mal.", 25, Category::Vanilla, Type::WinCondition,
 +      true, nullptr, true },
 +    { 33, "Sniper Fury", "Furia de francotirador", "Hit 10 enemies with the bow in a row.",
 +      "Golpea a 10 enemigos seguidos con el arco.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, true },
++      ICON_BOW, true },
 +    { 34, "Who Let the Dogs Out", "¿Quién soltó a los perros?", "Get chased by a dog.",
 +      "Que te persiga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 35, "Money Solves Everything", "El dinero lo resuelve todo",
 +      "Bribe the guard in front of the gate to gain entry to the courtyard.", "Soborna al guardia de la puerta para entrar al patio.", 5,
-+      Category::Vanilla, Type::Missable, false, nullptr, true },
++      Category::Vanilla, Type::Missable, false, ICON_ADULTS_WALLET, true },
 +    { 36, "Troublemaker", "Alborotador", "Break 10 pots in a row.",
 +      "Rompe 10 jarrones seguidos.", 5, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 37, "Super Cucco Catching", "Súper atrapa-cucco", "Catch all the Cuccos in Kakariko.",
-+      "Atrapa a todos los Cuccos de Kakariko.", 5, Category::Vanilla, Type::None, false, nullptr,
++      "Atrapa a todos los Cuccos de Kakariko.", 5, Category::Vanilla, Type::None, false, ICON_CHICKEN,
 +      true },
 +    { 38, "You Make Me Feel So Good", "Me haces sentir tan bien",
 +      "Obtain some nutritious milk from a healthy cow.", "Consigue leche nutritiva de una vaca sana.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, true },
++      Category::Vanilla, Type::None, false, ICON_BOTTLE_MILK_FULL, true },
 +    { 39, "Bullseye!!", "¡En el blanco!", "Hit the bullseye at the shooting gallery.",
-+      "Da en el blanco en la galería de tiro.", 5, Category::Vanilla, Type::None, false, nullptr,
++      "Da en el blanco en la galería de tiro.", 5, Category::Vanilla, Type::None, false, ICON_SLINGSHOT,
 +      true },
 +    { 40, "You Can Be a Star", "Puedes ser una estrella", "Get 1000 points at the shooting gallery.",
-+      "Saca 1000 puntos en la galería de tiro.", 5, Category::Vanilla, Type::None, false, nullptr,
++      "Saca 1000 puntos en la galería de tiro.", 5, Category::Vanilla, Type::None, false, ICON_BOW,
 +      true },
 +    { 42, "Shield Raider", "Ladrón de escudos", "Steal a shield with a Like Like.",
-+      "Que un Like Like te robe el escudo.", 5, Category::Vanilla, Type::Missable, false, nullptr,
++      "Que un Like Like te robe el escudo.", 5, Category::Vanilla, Type::Missable, false, ICON_SHIELD_HYLIAN,
 +      true },
 +    { 43, "Catch Me If You Can", "Atrápame si puedes", "Catch the running man.",
-+      "Atrapa al hombre que corre.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Atrapa al hombre que corre.", 5, Category::Vanilla, Type::None, false, ICON_MASK_BUNNY_HOOD, true },
 +    { 44, "Cuccos' Revenge", "La venganza de los cuccos", "Feel the wrath of the cuccos in Kakariko Village.",
-+      "Siente la ira de los cuccos en Kakariko.", 5, Category::Vanilla, Type::None, false, nullptr,
++      "Siente la ira de los cuccos en Kakariko.", 5, Category::Vanilla, Type::None, false, ICON_CHICKEN,
 +      true },
 +    { 45, "Roll Roll and Away", "Rueda, rueda y vete", "Obtain the Bomb Bag upgrade in Goron City.",
 +      "Consigue la mejora de la bolsa de bombas en Goron City.", 5, Category::Vanilla, Type::None, false, nullptr, true },
@@ -357,108 +421,108 @@ index 00000000..5d2c43e1
 +      nullptr, false },
 +    { 48, "Bombchu Bowling Star", "Estrella del bowling bombchu",
 +      "Get a perfect score at Bombchu Bowling.", "Saca la puntuación perfecta en el bowling bombchu.",
-+      5, Category::Vanilla, Type::None, false, nullptr, true },
++      5, Category::Vanilla, Type::None, false, ICON_BOMBCHU, true },
 +    { 49, "Mouse Ka-Boom", "Mouse Ka-Boom", "Blow up a mouse with a bomb.",
 +      "Explota un ratón con una bomba.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 50, "On Fire", "En llamas", "Set yourself on fire.",
-+      "Préndete fuego.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Préndete fuego.", 5, Category::Vanilla, Type::None, false, ICON_ARROW_FIRE, true },
 +    { 51, "Stocking Nuts", "Almacenando nueces", "Collect 50 Deku Nuts.",
-+      "Consigue 50 nueces Deku.", 5, Category::Vanilla, Type::Missable, false, nullptr, true },
++      "Consigue 50 nueces Deku.", 5, Category::Vanilla, Type::Missable, false, ICON_DEKU_NUT, true },
 +    { 52, "Magic Beans", "Frijoles mágicos", "Plant all 10 Magic Beans.",
-+      "Planta los 10 frijoles mágicos.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Planta los 10 frijoles mágicos.", 5, Category::Vanilla, Type::None, false, ICON_MAGIC_BEAN, true },
 +    { 53, "The Way the World Learns to Dive", "Como el mundo aprende a bucear",
 +      "Obtain the Silver Scale.", "Consigue la Escama de Plata.", 5, Category::Vanilla,
-+      Type::Progression, true, nullptr, true },
++      Type::Progression, true, ICON_SCALE_SILVER, true },
 +    { 54, "Take Me Away", "Llévame lejos", "Get carried away by a bird.",
 +      "Que te lleve un pájaro.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 56, "A Pretty Face", "Una cara bonita", "Get a pretty face in the Gerudo Fortress.",
 +      "Que te pongan una cara bonita en la Fortaleza Gerudo.", 5, Category::Vanilla, Type::None,
-+      false, nullptr, true },
++      false, ICON_MASK_KEATON, true },
 +    { 57, "Last Breath", "Último aliento", "Die in the Gerudo Training Ground.",
 +      "Muere en el campo de entrenamiento Gerudo.", 5, Category::Vanilla, Type::Missable, false,
-+      nullptr, true },
++      ICON_MASK_SKULL, true },
 +    { 58, "Happy Mask Salesman", "El vendedor de la Máscara Feliz",
 +      "Complete the Happy Mask trading quest.", "Completa la misión de las máscaras.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, true },
++      Category::Vanilla, Type::None, false, ICON_MASK_TRUTH, true },
 +    { 60, "Hook Me Away", "Engánchame", "Use the Hookshot to cross a gap.",
-+      "Usa el gancho para cruzar un hueco.", 5, Category::Vanilla, Type::None, false, nullptr,
++      "Usa el gancho para cruzar un hueco.", 5, Category::Vanilla, Type::None, false, ICON_HOOKSHOT,
 +      true },
 +    { 61, "Ghost Chaser", "Cazafantasmas", "Catch a Poe.",
-+      "Atrapa un Poe.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Atrapa un Poe.", 5, Category::Vanilla, Type::None, false, ICON_BOTTLE_POE, true },
 +    { 62, "Jump Over", "Salta por encima", "Jump over an enemy.",
-+      "Salta por encima de un enemigo.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Salta por encima de un enemigo.", 5, Category::Vanilla, Type::None, false, ICON_BOOTS_KOKIRI, true },
 +    { 63, "Pierre the Wanderer", "Pierre el vagabundo", "Find Pierre the Scarecrow.",
 +      "Encuentra a Pierre el Espantapájaros.", 5, Category::Vanilla, Type::None, false, nullptr,
 +      true },
 +    { 64, "Poe Collector", "Coleccionista de Poes", "Sell 10 Poes to the Poe Collector.",
-+      "Vende 10 Poes al coleccionista.", 10, Category::Vanilla, Type::None, false, nullptr, true },
++      "Vende 10 Poes al coleccionista.", 10, Category::Vanilla, Type::None, false, ICON_BOTTLE_BIG_POE, true },
 +    { 65, "Drunkard", "Borracho", "Drink Lon Lon Milk.",
-+      "Bebe leche Lon Lon.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Bebe leche Lon Lon.", 5, Category::Vanilla, Type::None, false, ICON_BOTTLE_MILK_FULL, true },
 +    { 66, "Sniper Elite", "Francotirador de élite", "Hit 20 enemies with the bow in a row.",
 +      "Golpea a 20 enemigos seguidos con el arco.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, true },
++      ICON_BOW, true },
 +    { 67, "Heat Resistant Tunic", "Túnica resistente al calor", "Obtain the Goron Tunic.",
-+      "Consigue la túnica Goron.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Consigue la túnica Goron.", 5, Category::Vanilla, Type::None, false, ICON_TUNIC_GORON, true },
 +    { 68, "Kiss That Frog", "Besa a esa rana", "Kiss a frog.",
 +      "Besa a una rana.", 5, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 69, "The Flaming Arrow", "La flecha flamante", "Shoot a Fire Arrow.",
-+      "Dispara una flecha de fuego.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Dispara una flecha de fuego.", 5, Category::Vanilla, Type::None, false, ICON_BOW_FIRE, true },
 +    { 70, "The Fabulous Froggish Tenors", "Los fabulosos tenores rana",
 +      "Get all 5 frogs to sing.", "Haz cantar a las 5 ranas.", 5, Category::Vanilla, Type::None,
-+      false, nullptr, true },
++      false, ICON_SONG_NOTE, true },
 +    { 71, "Seeing Is Believing", "Ver para creer", "See a ghost.",
-+      "Ve un fantasma.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Ve un fantasma.", 5, Category::Vanilla, Type::None, false, ICON_BOTTLE_POE, true },
 +    { 73, "Biggoron's Sword", "La espada de Biggoron", "Obtain Biggoron's Sword.",
-+      "Consigue la espada de Biggoron.", 10, Category::Vanilla, Type::None, false, nullptr, true },
++      "Consigue la espada de Biggoron.", 10, Category::Vanilla, Type::None, false, ICON_SWORD_BIGGORON, true },
 +    { 74, "Ultimate Horse Master", "Maestro supremo del caballo", "Win all horse races.",
 +      "Gana todas las carreras de caballos.", 10, Category::Vanilla, Type::None, false, nullptr,
 +      true },
 +    { 75, "Graduate of Gerudo's Training Ground", "Graduado del campo de entrenamiento Gerudo",
 +      "Complete the Gerudo Training Ground.", "Completa el campo de entrenamiento Gerudo.", 5,
-+      Category::Vanilla, Type::None, false, nullptr, true },
++      Category::Vanilla, Type::None, false, ICON_ARROW_ICE, true },
 +    { 76, "Nayru's Love", "El amor de Nayru", "Obtain Nayru's Love.",
-+      "Consigue el Amor de Nayru.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Consigue el Amor de Nayru.", 5, Category::Vanilla, Type::None, false, ICON_NAYRUS_LOVE, true },
 +    { 77, "Musician", "Músico", "Play all 12 songs.",
-+      "Toca las 12 canciones.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Toca las 12 canciones.", 5, Category::Vanilla, Type::None, false, ICON_OCARINA_FAIRY, true },
 +    { 78, "Plenty of Hearts", "Muchos corazones", "Have 20 hearts.",
-+      "Ten 20 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
++      "Ten 20 corazones.", 10, Category::Vanilla, Type::Missable, false, ICON_HEART_CONTAINER, true },
 +    { 79, "Wind Runner", "Corredor del viento", "Use the Hover Boots to cross a gap.",
 +      "Usa las botas flotantes para cruzar un hueco.", 5, Category::Vanilla, Type::None, false,
-+      nullptr, true },
++      ICON_BOOTS_HOVER, true },
 +    { 80, "The Rock", "La Roca", "Lift a big rock.",
-+      "Levanta una roca grande.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Levanta una roca grande.", 5, Category::Vanilla, Type::None, false, ICON_GOLDEN_GAUNTLETS, true },
 +    { 81, "A Man's Best Friend", "El mejor amigo del hombre", "Get a dog to follow you.",
 +      "Que te siga un perro.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 83, "A Woman's Best Friend", "La mejor amiga de la mujer", "Get a cat to follow you.",
 +      "Que te siga un gato.", 5, Category::Vanilla, Type::None, false, nullptr, true },
 +    { 85, "My Broken Heart", "Mi corazón roto", "Break a heart container.",
-+      "Rompe un contenedor de corazón.", 10, Category::Vanilla, Type::None, false, nullptr, true },
++      "Rompe un contenedor de corazón.", 10, Category::Vanilla, Type::None, false, ICON_HEART_CONTAINER, true },
 +    { 86, "Family Reunion", "Reunión familiar", "Find all 100 Gold Skulltulas in one save.",
 +      "Encuentra las 100 Skulltulas doradas en una partida.", 25, Category::Vanilla, Type::None,
-+      false, nullptr, true },
++      false, ICON_GOLD_SKULLTULA, true },
 +    { 87, "Fishing Lessons", "Lecciones de pesca", "Catch a fish.",
-+      "Pesca un pez.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Pesca un pez.", 5, Category::Vanilla, Type::None, false, ICON_FISHING_POLE, true },
 +    { 88, "Expert Angler", "Pescador experto", "Catch a big fish.",
-+      "Pesca un pez grande.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Pesca un pez grande.", 5, Category::Vanilla, Type::None, false, ICON_BOTTLE_FISH, true },
 +    { 89, "Mischievous Hero", "Héroe travieso", "Prank a guard.",
-+      "Hazle una broma a un guardia.", 5, Category::Vanilla, Type::None, false, nullptr, true },
++      "Hazle una broma a un guardia.", 5, Category::Vanilla, Type::None, false, ICON_SHIELD_HYLIAN, true },
 +    { 90, "Accomplished Angler", "Pescador consumado", "Catch the rare Hyrule Loach.",
-+      "Pesca la rara locha de Hyrule.", 10, Category::Vanilla, Type::None, false, nullptr, true },
++      "Pesca la rara locha de Hyrule.", 10, Category::Vanilla, Type::None, false, ICON_SCALE_GOLDEN, true },
 +    { 91, "Cartographer", "Cartógrafo", "Get all dungeon maps.",
 +      "Consigue todos los mapas de las mazmorras.", 10, Category::Vanilla, Type::Missable, false,
-+      nullptr, true },
++      ICON_DUNGEON_MAP, true },
 +    { 93, "Race Against the Clock", "Carrera contra el reloj", "Defeat Barinade in less than 1:51 with 3 hearts only.",
 +      "Vence a Barinade en menos de 1:51 con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 94, "Dodgeball", "Balón prisionero", "Defeat Phantom Ganon without healing and with 3 hearts only.",
-+      "Vence a Ganon Fantasma sin curarte y con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
++      "Vence a Ganon Fantasma sin curarte y con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, ICON_SHIELD_MIRROR, true },
 +    { 95, "Whac-A-Mole", "Golpea al topo", "Defeat Volvagia using only the Megaton Hammer and without healing with 3 hearts only.",
 +      "Vence a Volvagia usando solo el martillo Megatón y sin curarte, con solo 3 corazones.", 10, Category::Vanilla, Type::Missable,
-+      false, nullptr, true },
++      false, ICON_HAMMER, true },
 +    { 96, "Tentacles of the Deep", "Tentáculos de lo profundo",
 +      "Defeat Morpha without falling into water or taking damage with 3 hearts only.", "Vence a Morpha sin caer al agua ni recibir daño, con solo 3 corazones.", 10,
 +      Category::Vanilla, Type::Missable, false, nullptr, true },
 +    { 97, "Invisible Stalker", "Acechador invisible", "Defeat Bongo Bongo without using the Lens of Truth and without healing with 3 hearts only.",
-+      "Vence a Bongo Bongo sin usar la Lente de la Verdad ni curarte, con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr,
++      "Vence a Bongo Bongo sin usar la Lente de la Verdad ni curarte, con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, ICON_LENS_OF_TRUTH,
 +      true },
 +    { 98, "Double Trouble", "Doble problema", "Defeat the Twinrova Sisters using only the Master Sword and Mirror Shield without using Fairies and with 3 hearts only.",
 +      "Vence a las hermanas Twinrova usando solo la Espada Maestra y el Escudo Espejo, sin usar hadas y con solo 3 corazones.", 10, Category::Vanilla, Type::Missable, false, nullptr, true },
@@ -471,27 +535,27 @@ index 00000000..5d2c43e1
 +      nullptr, true },
 +    { 1002, "Seed Beater", "Comedor de semillas", "Beat Ganon in a Randomizer seed.",
 +      "Derrota a Ganon en una seed del Randomizer.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_MAGIC_BEAN, true },
 +    { 1003, "Would You Kindly", "Would You Kindly", "Generate a seed with Entrance Shuffle.",
 +      "Genera una seed con Entrance Shuffle.", 10, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_DUNGEON_MAP, true },
 +    { 1004, "Token Shuffle", "Tokens revueltos", "Generate a seed with Token Shuffle.",
-+      "Genera una seed con Token Shuffle.", 5, Category::Randomizer, Type::None, false, nullptr,
++      "Genera una seed con Token Shuffle.", 5, Category::Randomizer, Type::None, false, ICON_GOLD_SKULLTULA,
 +      true },
 +    { 1005, "The price is a lie", "El precio es una mentira!",
 +      "Buy an item at an inflated shop price.", "Compra un objeto con sobreprecio en una tienda.",
-+      10, Category::Randomizer, Type::None, false, nullptr, true },
++      10, Category::Randomizer, Type::None, false, ICON_SOLD_OUT, true },
 +    { 1006, "Kokiri Sword Shuffle", "Espada Kokiri revuelta",
 +      "Generate a seed with the Kokiri Sword shuffled.",
 +      "Genera una seed con la Espada Kokiri revuelta.", 5, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_SWORD_KOKIRI, true },
 +    { 1007, "This doesn't belong here", "esto no es de aquí",
 +      "Find a dungeon key outside its own dungeon.",
 +      "Consigue una llave fuera de su mazmorra.", 5, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_SMALL_KEY, true },
 +    { 1008, "Increased Damage", "Daño aumentado", "Beat Ganon with damage set to x2 or more.",
 +      "Derrota a Ganon con el daño aumentado (x2 o más).", 10, Category::Randomizer, Type::None,
-+      false, nullptr, true },
++      false, ICON_SWORD_BIGGORON, true },
 +    { 1009, "Boss Rush", "Boss Rush", "Complete the Boss Rush.",
 +      "Completa el Boss Rush.", 25, Category::Randomizer, Type::None, false, nullptr, true },
 +    { 1010, "Wisdom, Power and Courage", "Sabiduría, poder y valor",
@@ -503,30 +567,30 @@ index 00000000..5d2c43e1
 +      nullptr, true },
 +    { 1012, "Gotta Go Fast", "¡Hay que ir rápido!", "Beat a seed in under 5 hours.",
 +      "Pásate una seed en menos de 5 horas.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_MASK_BUNNY_HOOD, true },
 +    { 1013, "Does this belong here?", "esto es de aquí?",
 +      "Find a dungeon reward outside its own dungeon.",
 +      "Consigue una recompensa de mazmorra fuera de su mazmorra.", 5, Category::Randomizer,
-+      Type::None, false, nullptr, true },
++      Type::None, false, ICON_MEDALLION_LIGHT, true },
 +    { 1014, "100 Skulltulas", "100 Skulltulas", "Get all 100 Gold Skulltulas in a seed.",
 +      "Consigue las 100 Skulltulas doradas en una seed.", 25, Category::Randomizer, Type::None,
-+      false, nullptr, true },
++      false, ICON_GOLD_SKULLTULA, true },
 +    { 1015, "20 Hearts", "20 corazones", "Reach 20 hearts in a seed.",
-+      "Llega a 20 corazones en una seed.", 25, Category::Randomizer, Type::None, false, nullptr,
++      "Llega a 20 corazones en una seed.", 25, Category::Randomizer, Type::None, false, ICON_HEART_CONTAINER,
 +      true },
 +    { 1016, "All 12 Songs", "Las 12 canciones", "Learn all 12 songs in a seed.",
 +      "Aprende las 12 canciones en una seed.", 10, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_OCARINA_FAIRY, true },
 +    { 1017, "Full Equipment", "Todo el equipamiento", "Get all equipment in a seed.",
 +      "Consigue todo el equipamiento en una seed.", 10, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_SWORD_MASTER, true },
 +    { 1018, "All Dungeon Rewards", "Todas las recompensas de mazmorra",
 +      "Get all 6 medallions and 3 Spiritual Stones in a seed.",
 +      "Consigue los 6 medallones y las 3 piedras en una seed.", 25, Category::Randomizer,
 +      Type::None, false, nullptr, true },
 +    { 1019, "All Masks", "Todas las máscaras", "Get every mask in a seed.",
 +      "Consigue todas las máscaras en una seed.", 25, Category::Randomizer, Type::None, false,
-+      nullptr, true },
++      ICON_MASK_TRUTH, true },
 +    { 1020, "Heartless", "Heartless", "Beat a seed with 3 hearts, no containers or pieces.",
 +      "Pásate una seed con 3 corazones, sin contenedores ni piezas.", 25, Category::Randomizer,
 +      Type::None, false, nullptr, true },
@@ -534,11 +598,11 @@ index 00000000..5d2c43e1
 +      "Completa el Boss Rush sin recibir daño.", 25, Category::Randomizer, Type::None, false,
 +      nullptr, true },
 +    { 1022, "Five Seeds", "Completa 5 seeds", "Beat Ganon in 5 seeds.",
-+      "Derrota a Ganon en 5 seeds.", 25, Category::Randomizer, Type::None, false, nullptr, true },
++      "Derrota a Ganon en 5 seeds.", 25, Category::Randomizer, Type::None, false, ICON_MAGIC_BEAN, true },
 +    { 1023, "Money Solves Everything, Twenty Times", "El dinero lo resuelve todo, veinte veces",
 +      "Bribe the guard 20 times in Randomizer seeds (200 rupees in total).",
 +      "Soborna al guardia 20 veces en seeds del Randomizer (200 rupias en total).", 5,
-+      Category::Randomizer, Type::None, false, nullptr, true },
++      Category::Randomizer, Type::None, false, ICON_ADULTS_WALLET, true },
 +};
 +
 +// ---------------------------------------------------------------------------
@@ -695,8 +759,132 @@ index 00000000..5d2c43e1
 +}
 +
 +bool RewardEnabled(const char* rewardCvarSuffix) {
++    // Run #30: SecretMessage is the only reward OFF by default (maquette);
++    // everything else defaults ON.
++    const int defaultValue = (std::strcmp(rewardCvarSuffix, "SecretMessage") == 0) ? 0 : 1;
 +    return CVarGetInteger(
-+               (std::string("gAchievements.Reward.") + rewardCvarSuffix).c_str(), 1) != 0;
++               (std::string("gAchievements.Reward.") + rewardCvarSuffix).c_str(), defaultValue) != 0;
++}
++
++// ---------------------------------------------------------------------------
++// Ranks, titles and slot (run #30)
++// ---------------------------------------------------------------------------
++// Slot divisions: 40 pts each, 25 divisions. Rank = 3 divisions:
++// Iron 1-3, Bronze 4-6, Silver 7-9, Gold 10-12, Platinum 13-15,
++// Diamond 16-18, Ascendant 19-21, Immortal 22-24, Radiant 25 (1000 pts).
++// Colours are the mockup hex values.
++struct RankDef {
++    const char* name;
++    float r, g, b;
++};
++static const RankDef kRankDefs[] = {
++    { "Iron", 0x6b / 255.0f, 0x6f / 255.0f, 0x6a / 255.0f },
++    { "Bronze", 0xa0 / 255.0f, 0x6a / 255.0f, 0x2c / 255.0f },
++    { "Silver", 0xb9 / 255.0f, 0xc0 / 255.0f, 0xc7 / 255.0f },
++    { "Gold", 0xd9 / 255.0f, 0xae / 255.0f, 0x3f / 255.0f },
++    { "Platinum", 0x2a / 255.0f, 0xa7 / 255.0f, 0x9b / 255.0f },
++    { "Diamond", 0x7e / 255.0f, 0x8c / 255.0f, 0xe6 / 255.0f },
++    { "Ascendant", 0x2e / 255.0f, 0xa8 / 255.0f, 0x6a / 255.0f },
++    { "Immortal", 0xc9 / 255.0f, 0x3a / 255.0f, 0x5e / 255.0f },
++    { "Radiant", 0xe6 / 255.0f, 0xc6 / 255.0f, 0x19 / 255.0f },
++};
++
++RankInfo RankForPoints(int points) {
++    if (points < 0) {
++        points = 0;
++    }
++    int division = points / 40 + 1;
++    if (division > 25) {
++        division = 25;
++    }
++    const RankDef& def = kRankDefs[(division - 1) / 3];
++    const int pointsToNext = (division >= 25) ? -1 : division * 40 - points;
++    return RankInfo{ def.name, ImVec4(def.r, def.g, def.b, 1.0f), division, pointsToNext };
++}
++
++RankInfo CurrentRank() {
++    return RankForPoints(UnlockedPoints());
++}
++
++const char* TitleForCount(int count) {
++    if (count >= 112) {
++        return "Radiant";
++    }
++    if (count >= 75) {
++        return "Immortal";
++    }
++    if (count >= 50) {
++        return "Ascendant";
++    }
++    if (count >= 25) {
++        return "Diamond";
++    }
++    if (count >= 20) {
++        return "Platinum";
++    }
++    if (count >= 15) {
++        return "Gold";
++    }
++    if (count >= 10) {
++        return "Silver";
++    }
++    if (count >= 5) {
++        return "Bronze";
++    }
++    return "Iron";
++}
++
++const char* NextTitleForCount(int count, int* needed) {
++    static const struct {
++        int at;
++        const char* name;
++    } kTitles[] = {
++        { 5, "Bronze" }, { 10, "Silver" }, { 15, "Gold" }, { 20, "Platinum" },
++        { 25, "Diamond" }, { 50, "Ascendant" }, { 75, "Immortal" }, { 112, "Radiant" },
++    };
++    for (const auto& title : kTitles) {
++        if (count < title.at) {
++            if (needed != nullptr) {
++                *needed = title.at - count;
++            }
++            return title.name;
++        }
++    }
++    if (needed != nullptr) {
++        *needed = 0;
++    }
++    return nullptr;
++}
++
++int TriforcePieces() {
++    const int count = UnlockedCount();
++    if (count >= 75) {
++        return 3;
++    }
++    if (count >= 50) {
++        return 2;
++    }
++    if (count >= 25) {
++        return 1;
++    }
++    return 0;
++}
++
++bool IsComplete() {
++    return UnlockedCount() >= 112;
++}
++
++ImVec4 SlotColor() {
++    if (!RewardEnabled("Slot")) {
++        return ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
++    }
++    if (UnlockedPoints() >= 1000) {
++        // Free colour, picked in the Logros menu (default Radiant gold).
++        return ImVec4(CVarGetFloat("gAchievements.SlotColorR", 0xe6 / 255.0f),
++                      CVarGetFloat("gAchievements.SlotColorG", 0xc6 / 255.0f),
++                      CVarGetFloat("gAchievements.SlotColorB", 0x19 / 255.0f), 1.0f);
++    }
++    return CurrentRank().color;
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -758,6 +946,20 @@ index 00000000..5d2c43e1
 +    if (achievementId > 0 && achievementId < 1024) {
 +        sHookFired[achievementId] = true;
 +    }
++}
++
++// Run #30: read-only getters for C game code (title logo, HUD icon).
++// Same extern "C" bridge pattern as AchievementsNotify.h (run #29).
++extern "C" int Achievements_GetUnlockedCount(void) {
++    return UnlockedCount();
++}
++
++extern "C" int Achievements_GetUnlockedPoints(void) {
++    return UnlockedPoints();
++}
++
++extern "C" int Achievements_IsRewardEnabled(const char* suffix) {
++    return RewardEnabled(suffix) ? 1 : 0;
 +}
 +
 +// Bribe counter for #1023 (Randomizer: bribe the guard 20 times, 200
@@ -2665,6 +2867,11 @@ index 00000000..5d2c43e1
 +    sWasScrolling = (scrollDelta != 0.0f);
 +}
 +
++// Run #30: completion fanfare deferred past the credits. If the 112th
++// unlock lands in END_CREDITS (e.g. #31), the fanfare would stomp the
++// credits music; latch it and play it on the first normal gameplay frame.
++static bool sFanfarePending = false;
++
 +static void Tick() {
 +    // Test-toast combo and menu input poll every frame (the unlock check
 +    // below is throttled). The fight tracker also polls every frame: its
@@ -2679,6 +2886,13 @@ index 00000000..5d2c43e1
 +    // tick, and damage is a one-frame health drop).
 +    UpdateRandoPickupTracker();
 +    UpdateBossRushDamage();
++    // Run #30: deferred completion fanfare (see sFanfarePending above).
++    if (sFanfarePending && gSaveContext.gameMode == GAMEMODE_NORMAL && GameInteractor::IsSaveLoaded()) {
++        sFanfarePending = false;
++        if (RewardEnabled("Fanfare")) {
++            Audio_PlayFanfare(NA_BGM_MEDALLION_GET | 0x900);
++        }
++    }
 +    // Throttle: check every 30 frames. The logic runs at 20 Hz (not 60
 +    // fps — R_UPDATE_RATE = 3), so 30 frames is ~1.5 s. Achievements are
 +    // meta-progression; a 1.5 s delay is unnoticeable.
@@ -2756,6 +2970,23 @@ index 00000000..5d2c43e1
 +    CVarSetInteger(kHasUnseen, 1);
 +    SaveNow();
 +    EmitUnlockToast(newlyUnlocked, unlockedBefore == 0);
++    // Run #30: unlock jingle + completion fanfare. One jingle per tick
++    // even if several unlocked at once (e.g. loading an old save).
++    // NOTE: there is no Audio_PlaySfx(u16) in this tree; the simple
++    // centered-SFX call is the equivalent (functions.h:984).
++    if (RewardEnabled("Jingle")) {
++        Sfx_PlaySfxCentered(NA_SE_SY_CORRECT_CHIME);
++    }
++    // Fanfare exactly once, when the total first reaches 112 (all
++    // implementable achievements). In END_CREDITS it is deferred (see
++    // sFanfarePending): the credits music must not be stomped.
++    if (unlockedBefore < 112 && UnlockedCount() >= 112 && RewardEnabled("Fanfare")) {
++        if (gSaveContext.gameMode == GAMEMODE_END_CREDITS) {
++            sFanfarePending = true;
++        } else {
++            Audio_PlayFanfare(NA_BGM_MEDALLION_GET | 0x900);
++        }
++    }
 +}
 +
 +// ---------------------------------------------------------------------------
@@ -2774,12 +3005,13 @@ index 00000000..5d2c43e1
 +} // namespace Achievements
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.h b/soh/soh/Enhancements/Achievements/Achievements.h
 new file mode 100644
-index 00000000..e44de656
+index 00000000..50a32dad
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.h
-@@ -0,0 +1,91 @@
+@@ -0,0 +1,121 @@
 +#pragma once
 +
++#include <imgui.h>
 +#include <string>
 +#include <vector>
 +
@@ -2797,8 +3029,11 @@ index 00000000..e44de656
 +// The 14 story achievements (13 progression + 1 win condition) are hidden
 +// ("???") until unlocked, and can be revealed by tapping them (spoiler
 +// warning). Visual rewards (slot, titles, Triforce, logo, HUD, secret
-+// message, jingle, fanfare) are a later phase; the toggle framework is
-+// ready here.
++// message, jingle, fanfare) landed in run #30: menu header + reward cards
++// + icons (SohMenuAchievements.cpp), logo glow/gold (z_en_mag.c), HUD
++// Triforce icon (z_parameter.c), jingle/fanfare (Tick, below). Still
++// pending: the slot tint on the file-select screen (z_file_choose.c) —
++// SlotColor() below is ready for it.
 +
 +namespace Achievements {
 +
@@ -2821,7 +3056,7 @@ index 00000000..e44de656
 +    bool implemented; // Detection wired (phase 1: only the 13 progression).
 +};
 +
-+// Full registry (all 112 entries). Detection is wired only for the
++// Full registry (all 113 entries). Detection is wired only for the
 +// implemented ones; the rest show as locked in the Logros menu.
 +const std::vector<Def>& GetDefs();
 +const Def* FindDef(int id);
@@ -2858,9 +3093,35 @@ index 00000000..e44de656
 +int CategoryUnlockedCount(Category category);
 +int CategoryTotalCount(Category category);
 +
-+// Reward toggles (framework; the visuals land in a later phase).
-+// Each reward has its own switch in the Logros menu; everything is off-able.
++// Reward toggles (run #30: the visuals are live; every reward can be
++// turned off from the Logros menu). Each reward has its own switch in
++// the Logros menu; SecretMessage is the only one OFF by default.
 +bool RewardEnabled(const char* rewardCvarSuffix);
++
++// Ranks, titles and slot (run #30, visual rewards). Two independent
++// axes: titles by COUNT of unlocked achievements, slot division by
++// POINTS. "Complete" = 112 unlocked (all implementable achievements;
++// #46 cannot unlock, so 113 is unreachable). Rank/title names are
++// English proper nouns in both display languages.
++struct RankInfo {
++    const char* name; // Iron, Bronze, Silver, Gold, Platinum, Diamond, Ascendant, Immortal, Radiant
++    ImVec4 color;     // mockup colour for this rank (Radiant: #e6c619)
++    int division;     // 1-25 (40 pts each); 25 = Radiant at 1000 pts
++    int pointsToNext; // points missing for the next division, -1 at Radiant
++};
++RankInfo RankForPoints(int points);
++RankInfo CurrentRank(); // RankForPoints(UnlockedPoints())
++const char* TitleForCount(int count); // Iron 0-4, Bronze 5, Silver 10, Gold 15, Platinum 20,
++// Diamond 25, Ascendant 50, Immortal 75, Radiant 112
++// Next title after `count` (nullptr at Radiant); `needed` gets how many
++// more unlocks it takes (0 at Radiant).
++const char* NextTitleForCount(int count, int* needed);
++int TriforcePieces(); // 0-3: one piece at 25, 50 and 75 unlocks
++bool IsComplete();    // UnlockedCount() >= 112
++// Slot colour: the current rank colour, or the free colour picked in
++// the Logros menu (gAchievements.SlotColorR/G/B, default Radiant gold)
++// once 1000 pts are reached. White when the Slot reward is off.
++ImVec4 SlotColor();
 +
 +// Navigate the SoH menu to the Logros section (used by the toast action).
 +void OpenLogrosMenu();
@@ -2871,10 +3132,10 @@ index 00000000..e44de656
 +} // namespace Achievements
 diff --git a/soh/soh/Enhancements/Achievements/AchievementsNotify.h b/soh/soh/Enhancements/Achievements/AchievementsNotify.h
 new file mode 100644
-index 00000000..a6808cfa
+index 00000000..8e791821
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/AchievementsNotify.h
-@@ -0,0 +1,35 @@
+@@ -0,0 +1,44 @@
 +#pragma once
 +// Bridge so C actor code can report an achievement event to the C++
 +// Achievements module. The call only latches a pending flag; Tick()
@@ -2899,6 +3160,12 @@ index 00000000..a6808cfa
 +//     branch). See Achievements_NotifyBossHit in Achievements.cpp.
 +//   #1021 Flawless Boss Rush — BossRush.cpp, when a new Boss Rush file is
 +//     created (BossRush_InitSave); resets the damage flag for the attempt.
++//
++// Read-only getters (run #30, visual rewards): C game code (title logo,
++// HUD icon) reads the unlock state through these — same bridge pattern,
++// implemented in Achievements.cpp over UnlockedCount()/UnlockedPoints()/
++// RewardEnabled(). The visuals turn off on their own after ResetAll()
++// because the getters read the live CVars.
 +#ifdef __cplusplus
 +extern "C" {
 +#endif
@@ -2907,6 +3174,9 @@ index 00000000..a6808cfa
 +void Achievements_NotifyBossHit(unsigned int dmgFlags); // u32; spelled out so the header compiles in C++ before the C headers define u32
 +void Achievements_NotifyGohmaRetreat(void);
 +void Achievements_NotifyBossRushStart(void);
++int Achievements_GetUnlockedCount(void);
++int Achievements_GetUnlockedPoints(void);
++int Achievements_IsRewardEnabled(const char* suffix); // 1 = on (RewardEnabled); "Slot", "LogoGlow", "HudIcon", ...
 +#ifdef __cplusplus
 +}
 +#endif
@@ -3505,6 +3775,93 @@ index 1b4f62c4..d8f33d7d 100644
  }
  
  bool VerifyArchiveVersion(OTRVersion version) {
+diff --git a/soh/soh/SohGui/ImGuiUtils.cpp b/soh/soh/SohGui/ImGuiUtils.cpp
+index 968f5eac..d12294a7 100644
+--- a/soh/soh/SohGui/ImGuiUtils.cpp
++++ b/soh/soh/SohGui/ImGuiUtils.cpp
+@@ -1,7 +1,10 @@
+ #include <ship/Context.h>
++#include <ship/resource/archive/ArchiveManager.h>
+ #include <fast/Fast3dGui.h>
++#include <spdlog/spdlog.h>
+ 
+ #include "ImGuiUtils.h"
++#include "soh/Enhancements/Achievements/Achievements.h"
+ #include "soh/Enhancements/randomizer/rando_hash.h"
+ #include "soh/Enhancements/randomizer/randomizerTypes.h"
+ 
+@@ -279,10 +282,58 @@ void RegisterImGuiItemIcons() {
+         gui->LoadGuiTexture(entry.tex, entry.tex, "", ImVec4(1, 1, 1, 1));
+     }
+ 
++    RegisterAchievementIcons();
++
+     gui->LoadGuiTexture("gPauseUnusedCursorTex", gPauseUnusedCursorTex, "", ImVec4(1, 1, 1, 1));
+ 
+     gui->LoadGuiTexture("gWTriforcePieceTex", gWTriforcePieceTex, "", ImVec4(1, 1, 1, 1));
+ 
+     // TODO: Figure out why this texture wouldn't load in the TimeSplits Windows
+     gui->LoadGuiTexture("gSongNoteTex", gSongNoteTex, "", ImVec4(1, 1, 1, 1));
++}
++
++// Run #30: preload every achievement icon under its own __OTR__ path as
++// the cache key. GetTextureByName is cache-only (Fast3dGui.cpp): the
++// unlock toast (Notification.cpp) and the Logros menu both look the icon
++// up by its __OTR__ path, but RegisterImGuiItemIcons only registers
++// short names ("ITEM_BOW", ...) — so before this, no toast ever showed
++// an icon. Key = path fixes the toast, the menu and the "Test
++// Notification" button at once (same precedent as the gSeedTextures loop
++// above: LoadGuiTexture(tex, tex)).
++//
++// GUARD (mandatory): LoadGuiTexture(name, path) null-derefs when the path
++// is not in oot.o2r (Fast3dGui.cpp:768-774), so every load is guarded by
++// ArchiveManager::HasFile first — a bad path here would crash the boot.
++// HasFile takes the path WITHOUT the __OTR__ prefix (same form as the
++// Mapper's kDiagramTexturePath). A missing file only logs and skips: the
++// row/toast falls back to no icon, exactly like today.
++void RegisterAchievementIcons() {
++    auto gui = std::dynamic_pointer_cast<Fast::Fast3dGui>(Ship::Context::GetRawInstance()->GetWindow()->GetGui());
++    auto archives = Ship::Context::GetRawInstance()->GetResourceManager()->GetArchiveManager();
++    if (gui == nullptr || archives == nullptr) {
++        SPDLOG_WARN("[Achievements] icon preload skipped: no gui/archives yet");
++        return;
++    }
++    int loaded = 0;
++    int skipped = 0;
++    for (const Achievements::Def& def : Achievements::GetDefs()) {
++        if (def.icon == nullptr) {
++            continue; // pixel-art icons (27): nullptr by design, no texture to load
++        }
++        if (gui->HasTextureByName(def.icon)) {
++            continue; // already registered (e.g. re-entry)
++        }
++        std::string path = def.icon;
++        if (path.rfind("__OTR__", 0) == 0) {
++            path = path.substr(7);
++        }
++        if (!archives->HasFile(path)) {
++            SPDLOG_WARN("[Achievements] icon missing in oot.o2r, skipping: {} (#{})", def.icon, def.id);
++            skipped++;
++            continue;
++        }
++        gui->LoadGuiTexture(def.icon, def.icon, "", ImVec4(1, 1, 1, 1));
++        loaded++;
++    }
++    SPDLOG_INFO("[Achievements] preloaded {} achievement icons ({} skipped as missing)", loaded, skipped);
+ }
+\ No newline at end of file
+diff --git a/soh/soh/SohGui/ImGuiUtils.h b/soh/soh/SohGui/ImGuiUtils.h
+index 89a61b72..3c8a53e3 100644
+--- a/soh/soh/SohGui/ImGuiUtils.h
++++ b/soh/soh/SohGui/ImGuiUtils.h
+@@ -8,6 +8,7 @@
+ 
+ const char* GetTextureForItemId(uint32_t itemId);
+ void RegisterImGuiItemIcons();
++void RegisterAchievementIcons(); // run #30: preload the 86 achievement icons (key = __OTR__ path)
+ 
+ typedef struct {
+     uint32_t id;
 diff --git a/soh/soh/SohGui/Menu.cpp b/soh/soh/SohGui/Menu.cpp
 index 642bc54a..d5416597 100644
 --- a/soh/soh/SohGui/Menu.cpp
@@ -3782,11 +4139,14 @@ index feec116a..23900a4f 100644
  
 diff --git a/soh/soh/SohGui/SohMenuAchievements.cpp b/soh/soh/SohGui/SohMenuAchievements.cpp
 new file mode 100644
-index 00000000..f9abf654
+index 00000000..03b67048
 --- /dev/null
 +++ b/soh/soh/SohGui/SohMenuAchievements.cpp
-@@ -0,0 +1,338 @@
+@@ -0,0 +1,785 @@
++#include <algorithm>
 +#include <imgui.h>
++#include <fast/Fast3dGui.h>
++#include <libultraship/bridge/consolevariablebridge.h>
 +#include <set>
 +#include <ship/Context.h>
 +#include <spdlog/spdlog.h>
@@ -3803,22 +4163,449 @@ index 00000000..f9abf654
 +// (in-memory only; resets when the menu closes).
 +static std::set<int> gRevealConfirm;
 +
-+static std::map<int32_t, const char*> achievementLanguages = {
-+    { 0, "English" },
-+    { 1, "Español" },
-+};
-+
-+// L3+R3 mode (run #24, Lux): 0 = test toast, 1 = quick restart (default).
 +static std::map<int32_t, const char*> l3r3Modes = {
 +    { 0, "Aviso de prueba" },
 +    { 1, "Reinicio rápido" },
 +};
 +
-+static const ImVec4 kColorUnlocked(0.45f, 1.0f, 0.45f, 1.0f);
-+static const ImVec4 kColorLocked(0.75f, 0.75f, 0.75f, 1.0f);
-+static const ImVec4 kColorDesc(0.55f, 0.55f, 0.55f, 1.0f);
-+static const ImVec4 kColorPoints(1.0f, 0.85f, 0.3f, 1.0f);
++// ---------------------------------------------------------------------------
++// Palette (maquette; run #30).
++// ---------------------------------------------------------------------------
++static const ImVec4 kPalPanel(0.102f, 0.114f, 0.141f, 1.0f); // #1a1d24
++static const ImVec4 kPalCard(0.149f, 0.169f, 0.212f, 1.0f);  // #262b36
++static const ImVec4 kPalLine(0.227f, 0.255f, 0.322f, 1.0f);  // #3a4152
++static const ImVec4 kPalGold(0.961f, 0.773f, 0.259f, 1.0f);  // #f5c542
++static const ImVec4 kPalCream(0.910f, 0.902f, 0.875f, 1.0f); // #e8e6df
++static const ImVec4 kPalMuted(0.604f, 0.639f, 0.698f, 1.0f); // #9aa3b2
++static const ImVec4 kPalGreen(0.561f, 0.808f, 0.431f, 1.0f); // #8fce6e
++static const ImVec4 kPalDim(0.431f, 0.467f, 0.537f, 1.0f);   // #6e7789
++// Pill backgrounds (maquette rgba fills).
++static const ImVec4 kPillGoldBg(0.961f, 0.773f, 0.259f, 1.0f);
++static const ImVec4 kPillGoldFg(0.133f, 0.102f, 0.016f, 1.0f); // #221a04
++static const ImVec4 kPillGrayBg(0.224f, 0.251f, 0.310f, 1.0f); // #39404f
++static const ImVec4 kPillGreenBg(0.471f, 0.745f, 0.314f, 0.14f);
++static const ImVec4 kPillGoldSoftBg(0.961f, 0.773f, 0.259f, 0.14f);
++static const ImVec4 kPillGraySoftBg(0.604f, 0.639f, 0.698f, 0.08f);
++static const ImVec4 kChipStoryBg(0.353f, 0.549f, 0.784f, 0.10f);
++static const ImVec4 kChipStoryFg(0.659f, 0.784f, 0.925f, 1.0f); // #a8c8ec
++static const ImVec4 kChipMissBg(0.961f, 0.773f, 0.259f, 0.08f);
++static const ImVec4 kChipMissFg(0.933f, 0.761f, 0.478f, 1.0f); // #eec27a
 +
++static std::shared_ptr<Fast::Fast3dGui> GetGui() {
++    return std::dynamic_pointer_cast<Fast::Fast3dGui>(
++        Ship::Context::GetRawInstance()->GetWindow()->GetGui());
++}
++
++static void SaveAchievementsCvars() {
++    Ship::Context::GetRawInstance()->GetWindow()->GetGui()->SaveConsoleVariablesNextFrame();
++}
++
++// A rounded "pill" label (points, badge, chip): filled rounded rect +
++// text, laid out at the cursor like a normal item.
++static void DrawPill(const char* label, const ImVec4& bg, const ImVec4& fg) {
++    ImDrawList* dl = ImGui::GetWindowDrawList();
++    const ImVec2 textSize = ImGui::CalcTextSize(label);
++    const ImVec2 pos = ImGui::GetCursorScreenPos();
++    const float padX = 8.0f;
++    const float padY = 3.0f;
++    const ImVec2 p1(pos.x + textSize.x + 2 * padX, pos.y + textSize.y + 2 * padY);
++    dl->AddRectFilled(pos, p1, ImGui::GetColorU32(bg), 9.0f);
++    dl->AddText(ImVec2(pos.x + padX, pos.y + padY), ImGui::GetColorU32(fg), label);
++    ImGui::Dummy(ImVec2(textSize.x + 2 * padX, textSize.y + 2 * padY));
++}
++
++// A toggle switch drawn as a styled button (rounded track) with the knob
++// painted on top. Returns true when clicked.
++static bool DrawSwitchButton(const char* id, bool on) {
++    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 13.0f);
++    ImGui::PushStyleColor(ImGuiCol_Button, on ? kPalGold : ImVec4(0.25f, 0.28f, 0.34f, 1.0f));
++    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
++                          on ? ImVec4(1.0f, 0.83f, 0.35f, 1.0f) : ImVec4(0.32f, 0.36f, 0.43f, 1.0f));
++    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
++                          on ? ImVec4(0.85f, 0.68f, 0.20f, 1.0f) : ImVec4(0.20f, 0.23f, 0.28f, 1.0f));
++    const bool clicked = ImGui::Button(id, ImVec2(52, 26));
++    ImGui::PopStyleColor(3);
++    ImGui::PopStyleVar();
++    const ImVec2 rmin = ImGui::GetItemRectMin();
++    const ImVec2 rmax = ImGui::GetItemRectMax();
++    const float cy = (rmin.y + rmax.y) * 0.5f;
++    const float cx = on ? (rmax.x - 13.0f) : (rmin.x + 13.0f);
++    ImGui::GetWindowDrawList()->AddCircleFilled(ImVec2(cx, cy), 10.0f,
++                                                ImGui::GetColorU32(ImVec4(1, 1, 1, 1)));
++    return clicked;
++}
++
++// ---------------------------------------------------------------------------
++// Rewards header (run #30): title + unseen dot, Triforce, progress,
++// points, rank card, slot pips, milestone ladder, secret letter.
++// ---------------------------------------------------------------------------
++static void DrawTriforce(ImDrawList* dl, ImVec2 origin, float side, int pieces) {
++    // 3 triangles (top, bottom-left, bottom-right), gold when earned.
++    const float h = side * 0.866f;
++    const ImVec2 tris[3][3] = {
++        { { origin.x + side, origin.y },
++          { origin.x + side * 0.5f, origin.y + h },
++          { origin.x + side * 1.5f, origin.y + h } },
++        { { origin.x + side * 0.5f, origin.y + h },
++          { origin.x, origin.y + 2 * h },
++          { origin.x + side, origin.y + 2 * h } },
++        { { origin.x + side * 1.5f, origin.y + h },
++          { origin.x + side, origin.y + 2 * h },
++          { origin.x + side * 2.0f, origin.y + 2 * h } },
++    };
++    for (int i = 0; i < 3; i++) {
++        if (i < pieces) {
++            dl->AddTriangleFilled(tris[i][0], tris[i][1], tris[i][2], ImGui::GetColorU32(kPalGold));
++        } else {
++            dl->AddTriangleFilled(tris[i][0], tris[i][1], tris[i][2],
++                                  ImGui::GetColorU32(ImVec4(0.16f, 0.18f, 0.22f, 1.0f)));
++            dl->AddTriangle(tris[i][0], tris[i][1], tris[i][2], ImGui::GetColorU32(kPalDim), 1.0f);
++        }
++    }
++}
++
++static const struct Milestone {
++    int at;
++    const char* name;
++    const char* noteEn;
++    const char* noteEs;
++} kMilestones[] = {
++    { 5, "Bronze", "", "" },
++    { 10, "Silver", "", "" },
++    { 15, "Gold", "", "" },
++    { 20, "Platinum", "", "" },
++    { 25, "Diamond", "Triforce piece 1 + logo glow", "Pieza 1 de la Triforce + brillo del logo" },
++    { 50, "Ascendant", "Golden Triforce HUD icon + Triforce piece 2",
++      "Icono dorado del HUD + pieza 2 de la Triforce" },
++    { 75, "Immortal", "Full golden logo + Triforce piece 3", "Logo dorado completo + pieza 3 de la Triforce" },
++    { 112, "Radiant", "Radiant slot + free colour + secret message + fanfare",
++      "Slot Radiante + color libre + mensaje secreto + fanfarria" },
++};
++
++static void DrawLanguageButtons() {
++    const int lang = Achievements::Language();
++    ImGui::TextColored(kPalMuted, "%s", Achievements::Tr("MENU LANGUAGE", "IDIOMA DEL MENÚ").c_str());
++    ImGui::SameLine();
++    const float btnW = 64.0f;
++    const float gap = ImGui::GetStyle().ItemSpacing.x;
++    const float totalW = btnW * 2 + gap;
++    ImGui::SetCursorPosX(ImGui::GetWindowContentRegionMax().x - totalW);
++    const struct {
++        const char* label;
++        int value;
++    } buttons[] = { { "EN", 0 }, { "ES", 1 } };
++    for (int i = 0; i < 2; i++) {
++        if (i > 0) {
++            ImGui::SameLine(0, gap);
++        }
++        const bool active = (lang == buttons[i].value);
++        ImGui::PushStyleColor(ImGuiCol_Button, active ? kPalGold : ImVec4(0, 0, 0, 0));
++        ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
++                              active ? ImVec4(1.0f, 0.83f, 0.35f, 1.0f) : ImVec4(0.25f, 0.28f, 0.34f, 1.0f));
++        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
++                              active ? ImVec4(0.85f, 0.68f, 0.20f, 1.0f) : ImVec4(0.20f, 0.23f, 0.28f, 1.0f));
++        ImGui::PushStyleColor(ImGuiCol_Text, active ? kPillGoldFg : kPalMuted);
++        if (ImGui::Button(buttons[i].label, ImVec2(btnW, 30))) {
++            if (lang != buttons[i].value) {
++                CVarSetInteger("gAchievements.Language", buttons[i].value);
++                SaveAchievementsCvars();
++            }
++        }
++        ImGui::PopStyleColor(4);
++    }
++}
++
++static void DrawRewardsHeader(WidgetInfo&) {
++    const int count = Achievements::UnlockedCount();
++    const int total = static_cast<int>(Achievements::GetDefs().size()); // 113
++    const int points = Achievements::UnlockedPoints();
++    const int maxPoints = 1000; // implementable points (#46's 5 cannot unlock)
++    const int pieces = Achievements::TriforcePieces();
++    const Achievements::RankInfo rank = Achievements::CurrentRank();
++    const char* title = Achievements::TitleForCount(count);
++    int needed = 0;
++    const char* nextTitle = Achievements::NextTitleForCount(count, &needed);
++
++    DrawLanguageButtons();
++
++    // Title + unseen dot.
++    ImGui::TextColored(kPalGold, "%s", Achievements::Tr("ACHIEVEMENTS", "LOGROS").c_str());
++    if (Achievements::HasUnseen()) {
++        const ImVec2 rmin = ImGui::GetItemRectMin();
++        const ImVec2 rmax = ImGui::GetItemRectMax();
++        ImGui::GetWindowDrawList()->AddCircleFilled(
++            ImVec2(rmax.x + 12, (rmin.y + rmax.y) * 0.5f), 5.0f, ImGui::GetColorU32(kPalGold));
++    }
++    ImGui::TextColored(kPalMuted, "%s",
++                       Achievements::Tr(spdlog::fmt_lib::format("{} achievements in total · Vanilla + Randomizer",
++                                                                total),
++                                        spdlog::fmt_lib::format("{} logros en total · Vainilla + Randomizer", total))
++                           .c_str());
++
++    // Filling Triforce (ImDrawList triangles; gated by the Triforce switch).
++    if (Achievements::RewardEnabled("Triforce")) {
++        ImDrawList* dl = ImGui::GetWindowDrawList();
++        const ImVec2 origin = ImGui::GetCursorScreenPos();
++        const float side = 22.0f;
++        DrawTriforce(dl, origin, side, pieces);
++        ImGui::Dummy(ImVec2(side * 2.0f, side * 2.0f * 0.866f));
++        ImGui::SameLine();
++        ImGui::TextColored(kPalMuted, "%s",
++                           Achievements::Tr(spdlog::fmt_lib::format("TRIFORCE COMPLETE · {}/3", pieces),
++                                            spdlog::fmt_lib::format("TRIFORCE COMPLETO · {}/3", pieces))
++                               .c_str());
++    }
++
++    // Progress (count) + points.
++    const int pct = total > 0 ? (count * 100 / total) : 0;
++    ImGui::TextColored(kPalCream, "%s",
++                       spdlog::fmt_lib::format("{}/{} · {}%", count, total, pct).c_str());
++    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, kPalGold);
++    ImGui::PushStyleColor(ImGuiCol_FrameBg, kPalLine);
++    ImGui::ProgressBar(total > 0 ? static_cast<float>(count) / total : 0.0f, ImVec2(-1, 14), "");
++    ImGui::PopStyleColor(2);
++    ImGui::TextColored(kPalCream, "%s",
++                       spdlog::fmt_lib::format("{}/{} pts", points, maxPoints).c_str());
++    ImGui::SameLine();
++    if (points >= maxPoints) {
++        ImGui::TextColored(kPalGreen, "%s", Achievements::Tr("Maximum reached!", "¡Máximo alcanzado!").c_str());
++    } else {
++        ImGui::TextColored(kPalMuted, "%s",
++                           Achievements::Tr(spdlog::fmt_lib::format("{} pts to the maximum", maxPoints - points),
++                                            spdlog::fmt_lib::format("Faltan {} pts para el máximo", maxPoints - points))
++                               .c_str());
++    }
++
++    // Rank card.
++    ImGui::PushStyleColor(ImGuiCol_ChildBg, kPalPanel);
++    ImGui::PushStyleColor(ImGuiCol_Border, kPalGold);
++    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
++    ImGui::BeginChild("##rankcard", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
++    ImGui::TextColored(kPalMuted, "%s", Achievements::Tr("CURRENT RANK", "RANGO ACTUAL").c_str());
++    if (Achievements::RewardEnabled("Title")) {
++        ImGui::TextColored(rank.color, "%s", title);
++    } else {
++        ImGui::TextColored(kPalMuted, "%s", Achievements::Tr("(title reward off)", "(título apagado)").c_str());
++    }
++    if (nextTitle != nullptr) {
++        ImGui::TextColored(kPalMuted, "%s",
++                           Achievements::Tr(spdlog::fmt_lib::format("Next rank: {} — {} more achievements", nextTitle,
++                                                                    needed),
++                                            spdlog::fmt_lib::format("Siguiente rango: {} — faltan {} logros",
++                                                                    nextTitle, needed))
++                               .c_str());
++    } else {
++        ImGui::TextColored(kPalGreen, "%s",
++                           Achievements::Tr("Highest rank reached!", "¡Rango máximo alcanzado!").c_str());
++    }
++    ImGui::TextColored(kPalMuted, "%s",
++                       Achievements::Tr(spdlog::fmt_lib::format("Slot: {} · division {}/25", rank.name,
++                                                                rank.division),
++                                        spdlog::fmt_lib::format("Slot: {} · división {}/25", rank.name, rank.division))
++                           .c_str());
++    ImGui::EndChild();
++    ImGui::PopStyleVar();
++    ImGui::PopStyleColor(2);
++
++    // Slot pips: 25 divisions, one per 40 pts; Radiant gold at 1000 pts.
++    {
++        const float availW = ImGui::GetContentRegionAvail().x;
++        const int filled = std::min(25, points / 40);
++        const float gap = 3.0f;
++        float pipW = (availW - 24 * gap) / 25.0f;
++        if (pipW < 2.0f) {
++            pipW = 2.0f;
++        }
++        ImDrawList* dl = ImGui::GetWindowDrawList();
++        const ImVec2 p0 = ImGui::GetCursorScreenPos();
++        const ImVec4 filledCol = (points >= maxPoints && Achievements::RewardEnabled("Slot"))
++                                     ? ImVec4(0.902f, 0.776f, 0.098f, 1.0f) // Radiant #e6c619
++                                     : kPalGold;
++        for (int i = 0; i < 25; i++) {
++            const float x = p0.x + i * (pipW + gap);
++            const ImU32 col = ImGui::GetColorU32(i < filled ? filledCol
++                                                            : ImVec4(0.227f, 0.255f, 0.322f, 1.0f));
++            dl->AddRectFilled(ImVec2(x, p0.y), ImVec2(x + pipW, p0.y + 10), col, 2.0f);
++        }
++        ImGui::Dummy(ImVec2(availW, 10));
++    }
++
++    // Milestone ladder (8 boxes in a row; achieved = gold, next = gold border).
++    {
++        const float availW = ImGui::GetContentRegionAvail().x;
++        const float gap = 4.0f;
++        const float boxW = (availW - 7 * gap) / 8.0f;
++        const float boxH = 34.0f;
++        ImDrawList* dl = ImGui::GetWindowDrawList();
++        const ImVec2 p0 = ImGui::GetCursorScreenPos();
++        const Milestone* nextMs = nullptr;
++        for (const Milestone& ms : kMilestones) {
++            if (count < ms.at && nextMs == nullptr) {
++                nextMs = &ms;
++            }
++        }
++        for (int i = 0; i < 8; i++) {
++            const Milestone& ms = kMilestones[i];
++            const float x = p0.x + i * (boxW + gap);
++            const ImVec2 b0(x, p0.y);
++            const ImVec2 b1(x + boxW, p0.y + boxH);
++            const bool achieved = count >= ms.at;
++            const bool isNext = (nextMs != nullptr && nextMs == &ms);
++            const std::string num = std::to_string(ms.at);
++            const ImVec2 textSize = ImGui::CalcTextSize(num.c_str());
++            if (achieved) {
++                dl->AddRectFilled(b0, b1, ImGui::GetColorU32(kPalGold), 6.0f);
++                dl->AddText(ImVec2(b0.x + (boxW - textSize.x) * 0.5f, b0.y + (boxH - textSize.y) * 0.5f),
++                            ImGui::GetColorU32(kPillGoldFg), num.c_str());
++            } else {
++                dl->AddRectFilled(b0, b1, ImGui::GetColorU32(kPalCard), 6.0f);
++                if (isNext) {
++                    dl->AddRect(b0, b1, ImGui::GetColorU32(kPalGold), 6.0f, 0, 1.5f);
++                } else {
++                    dl->AddRect(b0, b1, ImGui::GetColorU32(kPalLine), 6.0f, 0, 1.0f);
++                }
++                dl->AddText(ImVec2(b0.x + (boxW - textSize.x) * 0.5f, b0.y + (boxH - textSize.y) * 0.5f),
++                            ImGui::GetColorU32(isNext ? kPalGold : kPalMuted), num.c_str());
++            }
++        }
++        ImGui::Dummy(ImVec2(availW, boxH));
++        if (nextMs != nullptr) {
++            ImGui::TextColored(kPalMuted, "%s",
++                               Achievements::Tr(spdlog::fmt_lib::format("Next: {} — {}{}", nextMs->at, nextMs->name,
++                                                                        nextMs->noteEn[0] != '\0'
++                                                                            ? std::string(" · ") + nextMs->noteEn
++                                                                            : std::string("")),
++                                                spdlog::fmt_lib::format("Siguiente: {} — {}{}", nextMs->at,
++                                                                        nextMs->name,
++                                                                        nextMs->noteEs[0] != '\0'
++                                                                            ? std::string(" · ") + nextMs->noteEs
++                                                                            : std::string("")))
++                                   .c_str());
++        } else {
++            ImGui::TextColored(kPalGreen, "%s",
++                               Achievements::Tr("All milestones reached!", "¡Todos los hitos conseguidos!").c_str());
++        }
++    }
++
++    // Secret message: letter block, only at 112 + SecretMessage on.
++    if (Achievements::IsComplete() && Achievements::RewardEnabled("SecretMessage")) {
++        ImGui::PushStyleColor(ImGuiCol_ChildBg, kPalPanel);
++        ImGui::PushStyleColor(ImGuiCol_Border, kPalGold);
++        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
++        ImGui::BeginChild("##secretletter", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
++        ImGui::TextColored(kPalGold, "%s", Achievements::Tr("Secret message", "Mensaje secreto").c_str());
++        ImGui::TextWrapped("%s",
++                           Achievements::Tr("Thank you for playing. You found every secret, beat every challenge, "
++                                            "and carried this journey all the way to its golden end. Hyrule is at "
++                                            "peace because you never gave up — and neither did we, building this "
++                                            "little corner of it for you.\n\n— Muse & Lux",
++                                            "Gracias por jugar. Encontraste cada secreto, superaste cada reto y "
++                                            "llevaste este viaje hasta su final dorado. Hyrule está en paz porque "
++                                            "nunca te rendiste — y nosotros tampoco, al construir este pequeño "
++                                            "rincón para ti.\n\n— Muse y Lux")
++                               .c_str());
++        ImGui::EndChild();
++        ImGui::PopStyleVar();
++        ImGui::PopStyleColor(2);
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Reward cards (run #30): 8 cards in a 4x2 grid (2 columns on narrow
++// windows), each with a drawn switch bound to its gAchievements.Reward.*
++// CVar. Plus the free slot colour picker (only at 1000 pts, Slot on).
++// ---------------------------------------------------------------------------
++static const struct RewardCard {
++    const char* suffix;
++    const char* nameEn;
++    const char* nameEs;
++} kRewardCards[] = {
++    { "Slot", "Radiant Slot", "Slot Radiante" },
++    { "Title", "Title", "Título" },
++    { "Triforce", "Filling Triforce", "Triforce que se llena" },
++    { "LogoGlow", "Logo Glow", "Brillo del logo" },
++    { "HudIcon", "Golden Triforce HUD Icon", "Icono dorado del Triforce en el HUD" },
++    { "SecretMessage", "Secret Message", "Mensaje secreto" },
++    { "Jingle", "Unlock Jingle", "Jingle al desbloquear" },
++    { "Fanfare", "Final Fanfare", "Fanfarria final" },
++};
++
++static void DrawRewardsGrid(WidgetInfo&) {
++    ImGui::TextColored(kPalMuted, "%s",
++                       Achievements::Tr("Each reward can be turned off", "Cada recompensa se puede apagar").c_str());
++    const float availW = ImGui::GetContentRegionAvail().x;
++    const float spacingX = ImGui::GetStyle().ItemSpacing.x;
++    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
++    const int cols = (availW >= 520.0f) ? 4 : 2;
++    const float cardW = (availW - (cols - 1) * spacingX) / cols;
++    const float cardH = 116.0f;
++    const float pad = ImGui::GetStyle().WindowPadding.y;
++
++    for (int i = 0; i < 8; i++) {
++        const RewardCard& card = kRewardCards[i];
++        const bool on = Achievements::RewardEnabled(card.suffix);
++        if (i > 0 && i % cols != 0) {
++            ImGui::SameLine(0, spacingX);
++        }
++        ImGui::PushID(card.suffix);
++        ImGui::PushStyleColor(ImGuiCol_ChildBg, kPalCard);
++        ImGui::PushStyleColor(ImGuiCol_Border, kPalLine);
++        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
++        ImGui::BeginChild("##rewardcard", ImVec2(cardW, cardH), ImGuiChildFlags_Border);
++        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + cardW - 2 * pad);
++        ImGui::TextColored(kPalCream, "%s", Achievements::Tr(card.nameEn, card.nameEs).c_str());
++        ImGui::PopTextWrapPos();
++        ImGui::SetCursorPosY(cardH - pad - 26.0f);
++        if (DrawSwitchButton("##switch", on)) {
++            CVarSetInteger((std::string("gAchievements.Reward.") + card.suffix).c_str(), on ? 0 : 1);
++            SaveAchievementsCvars();
++        }
++        ImGui::SameLine();
++        ImGui::TextColored(on ? kPalGold : kPalMuted, "%s", on ? "ON" : "OFF");
++        ImGui::EndChild();
++        ImGui::PopStyleVar();
++        ImGui::PopStyleColor(2);
++        ImGui::PopID();
++        if (i % cols == cols - 1) {
++            ImGui::Dummy(ImVec2(0, spacingY * 0.5f));
++        }
++    }
++
++    // Free slot colour (only at 1000 pts, Slot reward on). Stored as 3
++    // float CVars; default Radiant gold #e6c619.
++    if (Achievements::UnlockedPoints() >= 1000 && Achievements::RewardEnabled("Slot")) {
++        ImGui::TextColored(kPalMuted, "%s",
++                           Achievements::Tr("Slot colour (free choice at 1000 pts)",
++                                            "Color del slot (a elegir con 1000 pts)")
++                               .c_str());
++        float rgb[3] = {
++            CVarGetFloat("gAchievements.SlotColorR", 0xe6 / 255.0f),
++            CVarGetFloat("gAchievements.SlotColorG", 0xc6 / 255.0f),
++            CVarGetFloat("gAchievements.SlotColorB", 0x19 / 255.0f),
++        };
++        if (ImGui::ColorEdit3(Achievements::Tr("Slot colour", "Color del slot").c_str(), rgb)) {
++            CVarSetFloat("gAchievements.SlotColorR", rgb[0]);
++            CVarSetFloat("gAchievements.SlotColorG", rgb[1]);
++            CVarSetFloat("gAchievements.SlotColorB", rgb[2]);
++            SaveAchievementsCvars();
++        }
++        ImGui::SameLine();
++        if (ImGui::SmallButton(Achievements::Tr("Reset", "Restablecer").c_str())) {
++            CVarSetFloat("gAchievements.SlotColorR", 0xe6 / 255.0f);
++            CVarSetFloat("gAchievements.SlotColorG", 0xc6 / 255.0f);
++            CVarSetFloat("gAchievements.SlotColorB", 0x19 / 255.0f);
++            SaveAchievementsCvars();
++        }
++    }
++}
++
++// ---------------------------------------------------------------------------
++// Achievement rows as cards (run #30): 60x60 icon box (44x44 image,
++// grey tint when locked, dim empty box when the icon is nullptr),
++// "#N" + title, points pill + status badge on the right, Story /
++// Missable chips, description. Hidden rows keep the ??? reveal flow
++// (gRevealConfirm) inside the card.
++// ---------------------------------------------------------------------------
 +static void DrawAchievementRow(const Achievements::Def& def) {
 +    // One ImGui ID scope per row: without it, the 14 hidden "???" buttons
 +    // (13 once one is unlocked or revealed) all share the label "???" and
@@ -3829,6 +4616,11 @@ index 00000000..f9abf654
 +    const bool unlocked = Achievements::IsUnlocked(def.id);
 +    const bool revealed = Achievements::IsRevealed(def.id);
 +    const bool isHidden = def.hidden && !unlocked && !revealed;
++
++    ImGui::PushStyleColor(ImGuiCol_ChildBg, kPalCard);
++    ImGui::PushStyleColor(ImGuiCol_Border, unlocked ? kPalGold : kPalLine);
++    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 14.0f);
++    ImGui::BeginChild("##achrow", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
 +
 +    if (isHidden) {
 +        // Story achievement: shown as "???" until unlocked. Tapping it
@@ -3841,9 +4633,11 @@ index 00000000..f9abf654
 +            }
 +        }
 +        ImGui::SameLine();
-+        ImGui::TextColored(kColorLocked, "? pts");
++        DrawPill("? PTS", kPillGrayBg, kPalMuted);
++        ImGui::SameLine();
++        DrawPill(Achievements::Tr("HIDDEN", "OCULTO").c_str(), kPillGraySoftBg, kPalMuted);
 +        if (gRevealConfirm.count(def.id) != 0) {
-+            ImGui::TextColored(kColorDesc, "%s",
++            ImGui::TextColored(kPalMuted, "%s",
 +                               Achievements::Tr("This achievement is a story spoiler. Reveal it?",
 +                                                "Este logro es un spoiler de la historia. ¿Revelarlo?")
 +                                   .c_str());
@@ -3856,45 +4650,98 @@ index 00000000..f9abf654
 +                gRevealConfirm.erase(def.id);
 +            }
 +        } else {
-+            ImGui::TextColored(kColorDesc, "%s",
++            ImGui::TextColored(kPalMuted, "%s",
 +                               Achievements::Tr("Tap to reveal (spoiler)", "Toca para revelar (spoiler)").c_str());
 +        }
-+        ImGui::Separator();
++        ImGui::EndChild();
++        ImGui::PopStyleVar();
++        ImGui::PopStyleColor(2);
 +        ImGui::PopID();
 +        return;
 +    }
 +
 +    const std::string name = Achievements::Title(def);
-+    if (unlocked) {
-+        ImGui::TextColored(kColorUnlocked, "%s", name.c_str());
-+    } else {
-+        ImGui::TextColored(kColorLocked, "%s", name.c_str());
-+    }
-+    ImGui::SameLine();
-+    ImGui::TextColored(kColorPoints, "%d pts", def.points);
-+    if (unlocked) {
-+        ImGui::SameLine();
-+        ImGui::TextColored(kColorUnlocked, "(%s)",
-+                           Achievements::Tr("unlocked", "desbloqueado").c_str());
-+    }
-+    if (!def.implemented) {
-+        ImGui::SameLine();
-+        ImGui::TextColored(kColorDesc, "(%s)",
-+                           Achievements::Tr("coming soon", "próximamente").c_str());
-+    }
-+    if (def.hidden && revealed && !unlocked) {
-+        // Story achievement revealed (name visible) but still locked:
-+        // offer a small "Hide" button to put it back to "???" (clears its
-+        // Revealed CVar; takes effect on the next frame, no restart).
-+        // Unlocked achievements never show it. The row already runs inside
-+        // PushID(def.id), so the button ID is unique per row.
-+        ImGui::SameLine();
-+        if (ImGui::SmallButton(Achievements::Tr("Hide", "Ocultar").c_str())) {
-+            Achievements::Hide(def.id);
++    const std::string desc = Achievements::Desc(def);
++    auto gui = GetGui();
++    const bool hasIcon = def.icon != nullptr && gui != nullptr && gui->HasTextureByName(def.icon);
++
++    if (ImGui::BeginTable("##rowtable", 3, ImGuiTableFlags_None)) {
++        ImGui::TableSetupColumn("icon", ImGuiTableColumnFlags_WidthFixed, 68.0f);
++        ImGui::TableSetupColumn("text", ImGuiTableColumnFlags_WidthStretch);
++        ImGui::TableSetupColumn("right", ImGuiTableColumnFlags_WidthFixed, 116.0f);
++        ImGui::TableNextRow();
++        ImGui::TableNextColumn();
++        // Icon box 60x60, image 44x44 inside; grey tint when locked.
++        {
++            ImDrawList* dl = ImGui::GetWindowDrawList();
++            const ImVec2 ip = ImGui::GetCursorScreenPos();
++            dl->AddRectFilled(ip, ImVec2(ip.x + 60, ip.y + 60),
++                              ImGui::GetColorU32(ImVec4(0.10f, 0.11f, 0.14f, 1.0f)), 10.0f);
++            if (hasIcon) {
++                ImGui::SetCursorScreenPos(ImVec2(ip.x + 8, ip.y + 8));
++                const ImVec4 tint = unlocked ? ImVec4(1, 1, 1, 1)
++                                             : ImVec4(0.43f, 0.47f, 0.54f, 1.0f); // #6e7789
++                // NOTE: imgui 1.91.9b has no 5-arg Image(); the tint
++                // overload takes 6 args (border_col = transparent).
++                ImGui::Image(gui->GetTextureByName(def.icon), ImVec2(44, 44), ImVec2(0, 0), ImVec2(1, 1), tint,
++                             ImVec4(0, 0, 0, 0));
++            } else {
++                // No icon (pixel-art achievements, nullptr by design):
++                // dim empty box.
++                ImGui::Dummy(ImVec2(60, 60));
++            }
 +        }
++        ImGui::TableNextColumn();
++        ImGui::TextColored(kPalMuted, "#%d", def.id);
++        ImGui::SameLine();
++        ImGui::TextColored(unlocked ? kPalCream : kPalMuted, "%s", name.c_str());
++        ImGui::TextWrapped("%s", desc.c_str());
++        if (def.hidden) {
++            DrawPill(Achievements::Tr("Story", "Historia").c_str(), kChipStoryBg, kChipStoryFg);
++        }
++        if (def.type == Achievements::Type::Missable) {
++            if (def.hidden) {
++                ImGui::SameLine();
++            }
++            DrawPill(Achievements::Tr("Missable", "Perdible").c_str(), kChipMissBg, kChipMissFg);
++        }
++        ImGui::TableNextColumn();
++        // Points pill (gold when unlocked, grey when locked).
++        {
++            const std::string pts = spdlog::fmt_lib::format("{} PTS", def.points);
++            DrawPill(pts.c_str(), unlocked ? kPillGoldBg : kPillGrayBg,
++                     unlocked ? kPillGoldFg : kPalMuted);
++        }
++        // Status badge.
++        if (unlocked) {
++            DrawPill(Achievements::Tr("UNLOCKED", "DESBLOQUEADO").c_str(), kPillGreenBg, kPalGreen);
++        } else if (!def.implemented) {
++            DrawPill(Achievements::Tr("COMING SOON", "PRÓXIMAMENTE").c_str(), kPillGoldSoftBg, kPalGold);
++        } else {
++            DrawPill(Achievements::Tr("LOCKED", "BLOQUEADO").c_str(), kPillGraySoftBg, kPalMuted);
++        }
++        if (def.hidden && revealed && !unlocked) {
++            // Story achievement revealed (name visible) but still locked:
++            // offer a small "Hide" button to put it back to "???" (clears
++            // its Revealed CVar; takes effect on the next frame, no
++            // restart). Unlocked achievements never show it.
++            if (ImGui::SmallButton(Achievements::Tr("Hide", "Ocultar").c_str())) {
++                Achievements::Hide(def.id);
++            }
++        }
++        ImGui::EndTable();
 +    }
-+    ImGui::TextColored(kColorDesc, "%s", Achievements::Desc(def).c_str());
-+    ImGui::Separator();
++
++    ImGui::EndChild();
++    // Unlocked rows get the 5px gold bar on the left edge.
++    if (unlocked) {
++        const ImVec2 rmin = ImGui::GetItemRectMin();
++        const ImVec2 rmax = ImGui::GetItemRectMax();
++        ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(rmin.x, rmin.y + 10), ImVec2(rmin.x + 5, rmax.y - 10),
++                                                  ImGui::GetColorU32(kPalGold), 2.5f);
++    }
++    ImGui::PopStyleVar();
++    ImGui::PopStyleColor(2);
 +    ImGui::PopID();
 +}
 +
@@ -3940,12 +4787,6 @@ index 00000000..f9abf654
 +                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Randomizer),
 +                                            Achievements::CategoryPoints(Achievements::Category::Randomizer)))
 +                    .c_str());
-+    ImGui::TextColored(kColorDesc, "%s",
-+                       Achievements::Tr("Randomizer achievements arrive in a later phase. "
-+                                        "This is the full list.",
-+                                        "Los logros del Randomizer llegan en una fase posterior. "
-+                                        "Esta es la lista completa.")
-+                           .c_str());
 +    ImGui::Separator();
 +    for (const Achievements::Def& def : Achievements::GetDefs()) {
 +        if (def.category != Achievements::Category::Randomizer) {
@@ -3965,7 +4806,7 @@ index 00000000..f9abf654
 +
 +static void DrawResetAchievements(WidgetInfo&) {
 +    ImGui::SeparatorText(Achievements::Tr("Reset achievements", "Reiniciar logros").c_str());
-+    ImGui::TextColored(kColorDesc, "%s",
++    ImGui::TextColored(kPalMuted, "%s",
 +                       Achievements::Tr("Clears all unlocks, reveals and the bribe counter.",
 +                                        "Borra todos los desbloqueos, revelados y el contador de sobornos.")
 +                           .c_str());
@@ -3974,7 +4815,7 @@ index 00000000..f9abf654
 +            gResetConfirmArmed = true;
 +        }
 +    } else {
-+        ImGui::TextColored(kColorDesc, "%s",
++        ImGui::TextColored(kPalMuted, "%s",
 +                           Achievements::Tr("Are you sure? This cannot be undone.",
 +                                            "¿Seguro? Esto no se puede deshacer.")
 +                               .c_str());
@@ -3997,46 +4838,17 @@ index 00000000..f9abf654
 +    path = { "Logros", "Logros", SECTION_COLUMN_1 };
 +    AddSidebarEntry("Logros", path.sidebarName, 1);
 +
-+    AddWidget(path, Achievements::Tr("Language", "Idioma"), WIDGET_CVAR_COMBOBOX)
-+        .CVar("gAchievements.Language")
-+        .Options(ComboboxOptions().ComboMap(achievementLanguages).DefaultIndex(0));
++    // Run #30: rewards header (language buttons, Triforce, progress,
++    // rank, slot pips, milestones, secret letter) + reward cards.
++    // The old language combobox is gone: EN | ES buttons in the header
++    // set gAchievements.Language directly (UpdateAchievementsLanguage
++    // rewrites the stored labels every frame, so the switch is live).
++    AddWidget(path, "Rewards header", WIDGET_CUSTOM).CustomFunction(DrawRewardsHeader);
++    AddWidget(path, Achievements::Tr("Rewards", "Recompensas"), WIDGET_SEPARATOR_TEXT);
++    AddWidget(path, "Rewards grid", WIDGET_CUSTOM).CustomFunction(DrawRewardsGrid);
 +    AddWidget(path, Achievements::Tr("L3+R3 action", "Acción de L3+R3"), WIDGET_CVAR_COMBOBOX)
 +        .CVar("gAchievements.L3R3Mode")
 +        .Options(ComboboxOptions().ComboMap(l3r3Modes).DefaultIndex(1));
-+    AddWidget(path, Achievements::Tr("Each reward can be turned off", "Cada recompensa se puede apagar"),
-+              WIDGET_TEXT);
-+
-+    AddWidget(path, Achievements::Tr("Rewards", "Recompensas"), WIDGET_SEPARATOR_TEXT);
-+    AddWidget(path,
-+              Achievements::Tr("Visual rewards arrive in a later phase; the switches are already ready.",
-+                               "Las recompensas visuales llegan en una fase posterior; los interruptores ya están "
-+                               "listos."),
-+              WIDGET_TEXT);
-+    AddWidget(path, Achievements::Tr("Radiant slot", "Slot Radiante"), WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.Slot")
-+        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, Achievements::Tr("Title", "Título"), WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.Title")
-+        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, Achievements::Tr("Filling Triforce", "Triforce que se llena"), WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.Triforce")
-+        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, Achievements::Tr("Logo glow", "Brillo del logo"), WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.LogoGlow")
-+        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, Achievements::Tr("Golden Triforce HUD icon", "Icono dorado del Triforce en el HUD"),
-+              WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.HudIcon")
-+        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, Achievements::Tr("Secret message", "Mensaje secreto"), WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.SecretMessage")
-+        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, Achievements::Tr("Unlock jingle", "Jingle al desbloquear"), WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.Jingle")
-+        .Options(CheckboxOptions().DefaultValue(true));
-+    AddWidget(path, Achievements::Tr("Final fanfare", "Fanfarria final"), WIDGET_CVAR_CHECKBOX)
-+        .CVar("gAchievements.Reward.Fanfare")
-+        .Options(CheckboxOptions().DefaultValue(true));
 +
 +    // "Reiniciar logros" (run #26, Lux): destructive reset of ALL
 +    // achievements, with confirmation. Custom widget: the button text is
@@ -4060,33 +4872,25 @@ index 00000000..f9abf654
 +// ---------------------------------------------------------------------------
 +// Live language for the Logros menu labels.
 +//
-+// The widget labels (combobox, texts, separators, reward checkboxes) are
-+// plain strings stored in WidgetInfo at menu construction (AddMenuAchievements
-+// above), so they used to keep the language active at boot until the next
-+// restart, while the achievement lists (WIDGET_CUSTOM, drawn live via Tr())
-+// followed the selector immediately. MenuDrawItem reads widget.name fresh on
-+// every draw, so rewriting the stored names when the language CVar changes
-+// is enough: the next frame draws the new language. No rebuild of the menu,
++// The widget labels (combobox, separators) are plain strings stored in
++// WidgetInfo at menu construction (AddMenuAchievements above), so they
++// used to keep the language active at boot until the next restart, while
++// the achievement lists (WIDGET_CUSTOM, drawn live via Tr()) followed the
++// selector immediately. MenuDrawItem reads widget.name fresh on every
++// draw, so rewriting the stored names when the language CVar changes is
++// enough: the next frame draws the new language. No rebuild of the menu,
 +// no custom widgets, no ImGui state churn — and nothing else is touched.
++// The EN | ES buttons in the header set the CVar directly; the rewrite
++// runs every frame from SohMenu::UpdateElement.
 +//
-+// The table below must list every label AddMenuAchievements() creates, in
-+// the same EN/ES wording. Matching is by current name (EN or ES form), so it
-+// works no matter which language the game booted with, and widgets this
-+// table does not know are left alone.
++// The table below must list every stored label AddMenuAchievements()
++// creates, in the same EN/ES wording. Matching is by current name (EN or
++// ES form), so it works no matter which language the game booted with,
++// and widgets this table does not know are left alone. (The reward cards
++// and the header draw their labels live via Tr(), so they need no entry.)
 +static const std::pair<const char*, const char*> kAchievementsLabels[] = {
-+    { "Language", "Idioma" },
-+    { "Each reward can be turned off", "Cada recompensa se puede apagar" },
++    { "L3+R3 action", "Acción de L3+R3" },
 +    { "Rewards", "Recompensas" },
-+    { "Visual rewards arrive in a later phase; the switches are already ready.",
-+      "Las recompensas visuales llegan en una fase posterior; los interruptores ya están listos." },
-+    { "Radiant slot", "Slot Radiante" },
-+    { "Title", "Título" },
-+    { "Filling Triforce", "Triforce que se llena" },
-+    { "Logo glow", "Brillo del logo" },
-+    { "Golden Triforce HUD icon", "Icono dorado del Triforce en el HUD" },
-+    { "Secret message", "Mensaje secreto" },
-+    { "Unlock jingle", "Jingle al desbloquear" },
-+    { "Final fanfare", "Fanfarria final" },
 +    { "Reset achievements", "Reiniciar logros" },
 +    { "Achievements", "Logros" },
 +    { "Vanilla achievements", "Logros vainilla" },
@@ -4755,6 +5559,63 @@ index 98c63266..45b64b13 100644
  #else //_WIN32
  int main(int argc, char* argv[]) {
  #endif
+diff --git a/soh/src/code/z_parameter.c b/soh/src/code/z_parameter.c
+index 524ecd89..7bdb8a98 100644
+--- a/soh/src/code/z_parameter.c
++++ b/soh/src/code/z_parameter.c
+@@ -9,6 +9,7 @@
+ #include "soh/Enhancements/custom-message/CustomMessageInterfaceAddon.h"
+ #include "soh/Enhancements/cosmetics/cosmeticsTypes.h"
+ #include "soh/ShipUtils.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h" // run #30: HUD Triforce icon gates
+ 
+ #include <string.h>
+ #include <stdlib.h>
+@@ -5187,6 +5188,44 @@ void Interface_Draw(PlayState* play) {
+         Gfx_SetupDL_39Overlay(play->state.gfxCtx);
+ 
+         if (fullUi) {
++            // Run #30: golden Triforce HUD icon next to the hearts (50+
++            // unlocks, HudIcon reward on). New draw, not a re-tint: no
++            // Triforce icon existed in the HUD. Texture is the 32x32
++            // RGBA gTriforcePieceTex (soh_assets.h), drawn 16x16 with
++            // the same gDPLoadTextureBlock + gSPWideTextureRectangle
++            // pattern as Interface_DrawItemIconTexture. Position: 6 px
++            // right of the first row's last heart. Hearts advance 10 px
++            // per heart, `lineLength` per row (default 10; 0 = no wrap),
++            // first heart centre at OTRGetDimensionFromLeftEdge(0) + 30,
++            // half-width 8 * HeartsScale (default 0.7); first row spans
++            // ~y 20..32, so the 16x16 icon sits on that row. The combine
++            // mode is restored to MODULATEIA_PRIM afterwards so the
++            // rupee/key icons below keep SETUPDL_39's state.
++            if (Achievements_GetUnlockedCount() >= 50 && Achievements_IsRewardEnabled("HudIcon")) {
++                const s16 totalHearts = gSaveContext.healthCapacity / FULL_HEART_HEALTH;
++                s16 lineLength = CVarGetInteger(CVAR_COSMETIC("HUD.Hearts.LineLength"), 10);
++                if (lineLength <= 0) {
++                    lineLength = totalHearts;
++                }
++                const s16 heartsInRow = totalHearts < lineLength ? totalHearts : lineLength;
++                f32 heartsScale = 0.7f;
++                if (CVarGetInteger(CVAR_COSMETIC("HUD.HeartsCount.PosType"), 0) != ORIGINAL_LOCATION) {
++                    heartsScale = CVarGetFloat(CVAR_COSMETIC("HUD.HeartsCount.Scale"), 0.7f);
++                }
++                const s16 triforceX = (s16)(OTRGetDimensionFromLeftEdge(0.0f) + 30.0f +
++                                            (heartsInRow - 1) * 10.0f + 8.0f * heartsScale + 6.0f);
++                const s16 triforceY = 20;
++                gDPPipeSync(OVERLAY_DISP++);
++                gDPSetPrimColor(OVERLAY_DISP++, 0, 0, 255, 200, 60, interfaceCtx->healthAlpha);
++                gDPSetCombineMode(OVERLAY_DISP++, G_CC_MODULATERGBA_PRIM, G_CC_MODULATERGBA_PRIM);
++                gDPLoadTextureBlock(OVERLAY_DISP++, gTriforcePieceTex, G_IM_FMT_RGBA, G_IM_SIZ_32b, 32, 32, 0,
++                                    G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMIRROR | G_TX_WRAP, G_TX_NOMASK, G_TX_NOMASK,
++                                    G_TX_NOLOD, G_TX_NOLOD);
++                gSPWideTextureRectangle(OVERLAY_DISP++, triforceX << 2, triforceY << 2, (triforceX + 16) << 2,
++                                        (triforceY + 16) << 2, G_TX_RENDERTILE, 0, 0, 2 << 10, 2 << 10);
++                gDPSetCombineMode(OVERLAY_DISP++, G_CC_MODULATEIA_PRIM, G_CC_MODULATEIA_PRIM);
++            }
++
+             s16 PosX_RC;
+             s16 PosY_RC;
+             if (GameInteractor_Should(VB_RENDER_RUPEE_COUNTER, true)) {
 diff --git a/soh/src/overlays/actors/ovl_Boss_Fd2/z_boss_fd2.c b/soh/src/overlays/actors/ovl_Boss_Fd2/z_boss_fd2.c
 index 55dfe4d2..0ab4cada 100644
 --- a/soh/src/overlays/actors/ovl_Boss_Fd2/z_boss_fd2.c
@@ -4933,6 +5794,53 @@ index feccdd27..77fbc563 100644
                      this->actor.textId = 0x7098;
                      this->actionFunc = func_80A53538;
                      break;
+diff --git a/soh/src/overlays/actors/ovl_En_Mag/z_en_mag.c b/soh/src/overlays/actors/ovl_En_Mag/z_en_mag.c
+index 00111c91..04f9f825 100644
+--- a/soh/src/overlays/actors/ovl_En_Mag/z_en_mag.c
++++ b/soh/src/overlays/actors/ovl_En_Mag/z_en_mag.c
+@@ -8,6 +8,7 @@
+ #include "objects/object_mag/object_mag.h"
+ #include <soh/GameVersions.h>
+ #include "soh/ResourceManagerHelpers.h"
++#include "soh/Enhancements/Achievements/AchievementsNotify.h" // run #30: logo gold/glow gates
+ #include <string.h>
+ 
+ #define FLAGS (ACTOR_FLAG_UPDATE_CULLING_DISABLED | ACTOR_FLAG_DRAW_CULLING_DISABLED)
+@@ -555,10 +556,33 @@ void EnMag_DrawInner(Actor* thisx, PlayState* play, Gfx** gfxP) {
+         }
+     }
+ 
+-    gDPSetPrimColor(gfx++, 0, 0, 255, 255, 255, (s16)this->mainAlpha);
++    // Run #30: golden title logo (75+ unlocks) and logo glow (25+).
++    // EnMag_DrawImageRGBA32 uses SETUPDL_56 (MODULATEIA_PRIM, XLU), so
++    // the prim colour multiplies the shield texture: a gold prim tints
++    // the whole logo without touching the texture. The glow is a second
++    // pass of the same texture/position with a pulsing gold alpha; it
++    // switches off at 75, when the logo is already fully gold. The
++    // flames above keep their own prim/env colours (untouched).
++    const int achievementsUnlocked = Achievements_GetUnlockedCount();
++    const int logoGlowOn = Achievements_IsRewardEnabled("LogoGlow");
++    if (achievementsUnlocked >= 75 && logoGlowOn) {
++        gDPSetPrimColor(gfx++, 0, 0, 255, 200, 60, (s16)this->mainAlpha);
++    } else {
++        gDPSetPrimColor(gfx++, 0, 0, 255, 255, 255, (s16)this->mainAlpha);
++    }
+ 
+     if ((s16)this->mainAlpha != 0) {
+         EnMag_DrawImageRGBA32(&gfx, 160 + LOGO_X_SHIFT, 100, (u8*)LOGO_TEX, 160, 160);
++        if (achievementsUnlocked >= 25 && achievementsUnlocked < 75 && logoGlowOn) {
++            // Triangular pulse, 0..90 alpha over 120 frames, capped by
++            // the fade-in (mainAlpha tops at 210 by original design).
++            static int sLogoGlowFrame = 0;
++            const int phase = (sLogoGlowFrame++) % 120;
++            const s16 pulse = (s16)((phase < 60 ? phase : 120 - phase) * 3 / 2);
++            const s16 glowAlpha = pulse < this->mainAlpha ? pulse : (s16)this->mainAlpha;
++            gDPSetPrimColor(gfx++, 0, 0, 255, 200, 60, glowAlpha);
++            EnMag_DrawImageRGBA32(&gfx, 160 + LOGO_X_SHIFT, 100, (u8*)LOGO_TEX, 160, 160);
++        }
+     }
+ 
+     Gfx_SetupDL_39Ptr(&gfx);
 diff --git a/soh/src/overlays/actors/ovl_Fishing/z_fishing.c b/soh/src/overlays/actors/ovl_Fishing/z_fishing.c
 index d1702a54..3082eee9 100644
 --- a/soh/src/overlays/actors/ovl_Fishing/z_fishing.c
