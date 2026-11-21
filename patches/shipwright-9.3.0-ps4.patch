@@ -119,10 +119,10 @@ index f356d214..dddd2494 100644
  
 diff --git a/soh/soh/Enhancements/Achievements/Achievements.cpp b/soh/soh/Enhancements/Achievements/Achievements.cpp
 new file mode 100644
-index 00000000..3d0130c1
+index 00000000..9390fa51
 --- /dev/null
 +++ b/soh/soh/Enhancements/Achievements/Achievements.cpp
-@@ -0,0 +1,2880 @@
+@@ -0,0 +1,2963 @@
 +#include "Achievements.h"
 +#include "AchievementsNotify.h"
 +
@@ -2557,12 +2557,17 @@ index 00000000..3d0130c1
 +// session (stick first passing the deadzone) proves which single window
 +// moves, without spamming every frame.
 +static bool sWasScrolling = false;
++// Run #31: Triangle (Y) language toggle edge state (one toggle per press).
++static bool sLangTriangleWasDown = false;
 +// Frames before the first repeat, then frames between repeats
 +// (~0.4 s / ~0.15 s at 60 fps).
 +static constexpr int kRepeatDelayFrames = 24;
 +static constexpr int kRepeatRateFrames = 9;
 +// Scroll amount (x FontGlobalScale, so it grows with the zoom): the
-+// stick is analog, full deflection ≈ 480 px/s (≈ 8 px/frame at 60 fps).
++// stick is analog, full deflection ≈ 160 px/s (8 px/tick at the 20 Hz
++// Tick rate). Run #31 (Lux): the speed stays — the scroll never goes
++// slow because it never falls into a small child window anymore (see
++// IsScrollCandidateWindow), not because the step grew.
 +static constexpr float kScrollStickPxPerFrame = 8.0f;
 +
 +static bool RepeatStep(int dir, int& holdFrames, int& lastDir) {
@@ -2607,29 +2612,82 @@ index 00000000..3d0130c1
 +// ONE window is returned, never several. Windows only count while
 +// Active (drawn this frame); Tick() runs after DrawMenu in the frame,
 +// so the values are from the draw that just happened.
++// Run #31: which windows may scroll. A window is scroll-eligible only if
++// it is the section window itself, a section column ("... Settings
++// Column N"), a named list child (Randomizer's ChildIncludedLocations
++// etc.) — or the achievement list (##achlist). Anonymous "##" children
++// (##rewardcard, ##rankcard, ##achrow, ##secretletter) must NEVER eat the
++// stick scroll: the run #30 log proves 10/17 scroll sessions landed on
++// ##rewardcard_* windows with ScrollMax.y = 8, so the stick moved the
++// card 8 px and the list never moved (Scroll.y never passed 308/11234).
++// The one exception is ##achlist itself: it IS a "##" child, and it is
++// the window the stick must move. Any other "##" child with a genuinely
++// large ScrollMax (> 100 px) stays eligible, so a big anonymous list in
++// another section keeps working; the cards (<= 8 px) are excluded.
++// The 100 px line also separates a real list from a residual: once the
++// section's content fits (its only scrolling part is ##achlist), the
++// section window itself keeps ~3x WindowPadding of ScrollMax
++// (ContentSize + 2*pad - InnerHeight, imgui.cpp 1.91.9b), and scrolling
++// that residual would strand the list again — so a hovered window with
++// only a residual defers to its largest eligible descendant (below).
++static bool IsScrollCandidateWindow(ImGuiWindow* window) {
++    if (window == nullptr || !window->Active || window->Name == nullptr) {
++        return false;
++    }
++    if (strncmp(window->Name, "Main Menu/", 10) != 0 || strstr(window->Name, " Settings") == nullptr) {
++        return false;
++    }
++    if (window->ScrollMax.y <= 0.0f) {
++        return false;
++    }
++    if (strstr(window->Name, "/##achlist") != nullptr) {
++        return true;
++    }
++    if (strstr(window->Name, "/##") != nullptr && window->ScrollMax.y <= 100.0f) {
++        return false;
++    }
++    return true;
++}
++
 +static ImGuiWindow* FindMenuScrollWindow() {
 +    ImGuiContext* ctx = ImGui::GetCurrentContext();
 +    if (ctx == nullptr) {
 +        return nullptr;
 +    }
-+    // The hovered section window, if any.
++    // The hovered section window, if any — but a hovered window with only
++    // a residual ScrollMax (<= 100 px) defers to its largest
++    // scroll-candidate descendant: the list inside it. (Run #31: the
++    // Logros section window keeps ~24 px of residual ScrollMax once its
++    // content fits, while ##achlist holds ~11000 px; returning the section
++    // would move the header 24 px and strand the list.) A hovered window
++    // with a real ScrollMax scrolls itself, as before.
 +    ImGuiWindow* hovered = ctx->HoveredWindow;
-+    if (hovered != nullptr && hovered->Active && hovered->Name != nullptr &&
-+        strncmp(hovered->Name, "Main Menu/", 10) == 0 && strstr(hovered->Name, " Settings") != nullptr &&
-+        hovered->ScrollMax.y > 0.0f) {
++    if (IsScrollCandidateWindow(hovered)) {
++        if (hovered->ScrollMax.y <= 100.0f) {
++            ImGuiWindow* bestChild = nullptr;
++            const size_t prefixLen = strlen(hovered->Name);
++            for (ImGuiWindow* window : ctx->Windows) {
++                if (!IsScrollCandidateWindow(window)) {
++                    continue;
++                }
++                if (strncmp(window->Name, hovered->Name, prefixLen) != 0 ||
++                    window->Name[prefixLen] != '/') {
++                    continue;
++                }
++                if (bestChild == nullptr || window->ScrollMax.y > bestChild->ScrollMax.y) {
++                    bestChild = window;
++                }
++            }
++            if (bestChild != nullptr) {
++                return bestChild;
++            }
++        }
 +        return hovered;
 +    }
-+    // Fallback: the single section column with the largest ScrollMax.
++    // Fallback: the single scroll-candidate window with the largest ScrollMax.
 +    ImGuiWindow* best = nullptr;
 +    for (ImGuiWindow* window : ctx->Windows) {
-+        if (window == nullptr || !window->Active) {
-+            continue;
-+        }
-+        if (window->Name == nullptr || strncmp(window->Name, "Main Menu/", 10) != 0 ||
-+            strstr(window->Name, " Settings") == nullptr) {
-+            continue;
-+        }
-+        if (window->ScrollMax.y <= 0.0f) {
++        if (!IsScrollCandidateWindow(window)) {
 +            continue;
 +        }
 +        if (best == nullptr || window->ScrollMax.y > best->ScrollMax.y) {
@@ -2676,6 +2734,7 @@ index 00000000..3d0130c1
 +    sSectionHoldFrames = 0;
 +    sSectionDir = 0;
 +    sWasScrolling = false;
++    sLangTriangleWasDown = false;
 +}
 +
 +static void CheckMenuInput() {
@@ -2713,6 +2772,7 @@ index 00000000..3d0130c1
 +        sSectionHoldFrames = 0;
 +        sSectionDir = 0;
 +        sWasScrolling = false;
++        sLangTriangleWasDown = false;
 +        return;
 +    }
 +
@@ -2811,6 +2871,29 @@ index 00000000..3d0130c1
 +                menu->CycleSidebarSection(sectionDir);
 +            }
 +        }
++    }
++
++    // --- language: Triangle (Y) toggles EN/ES with the Logros header active ---
++    // Run #31 (Lux): the EN | ES buttons are only clickable with the
++    // pointer + R2, and the run #30 log proves Lux's 12 R2 clicks never
++    // landed on them (all y >= 496, buttons at y ~= 90-130). Triangle is
++    // free in the menu (R1/L1 = headers, D-pad = sections/zoom, stick =
++    // scroll, L3+R3 = quick restart/test toast) and needs no aiming, so
++    // it is the controller way to switch language. Rising edge only: one
++    // toggle per press, not one per frame while held. Gated on the Logros
++    // header (the language belongs to the Logros menu, not to the menu
++    // at large); the hint in the header says so (DrawLanguageButtons).
++    const bool triangleDown = PadButton(SDL_CONTROLLER_BUTTON_Y);
++    const bool trianglePressed = triangleDown && !sLangTriangleWasDown;
++    sLangTriangleWasDown = triangleDown;
++    if (trianglePressed &&
++        strcmp(CVarGetString(CVAR_SETTING("Menu.ActiveHeader"), "Settings"), "Logros") == 0) {
++        const int nextLang = 1 - Language();
++        CVarSetInteger(kLanguage, nextLang);
++        SaveNow();
++        // TEMP DIAG (run #31): proves the Triangle language switch on console.
++        SPDLOG_INFO("[PS4] [diag] menu language -> {} (Triangle)", nextLang == 1 ? "ES" : "EN");
++        spdlog::default_logger()->flush();
 +    }
 +
 +    // --- scroll: left stick only (run #25) ---
@@ -4139,10 +4222,10 @@ index feec116a..23900a4f 100644
  
 diff --git a/soh/soh/SohGui/SohMenuAchievements.cpp b/soh/soh/SohGui/SohMenuAchievements.cpp
 new file mode 100644
-index 00000000..03b67048
+index 00000000..837e3665
 --- /dev/null
 +++ b/soh/soh/SohGui/SohMenuAchievements.cpp
-@@ -0,0 +1,785 @@
+@@ -0,0 +1,850 @@
 +#include <algorithm>
 +#include <imgui.h>
 +#include <fast/Fast3dGui.h>
@@ -4285,6 +4368,16 @@ index 00000000..03b67048
 +static void DrawLanguageButtons() {
 +    const int lang = Achievements::Language();
 +    ImGui::TextColored(kPalMuted, "%s", Achievements::Tr("MENU LANGUAGE", "IDIOMA DEL MENÚ").c_str());
++    // Run #31 (compactación): la pista va en la MISMA fila que los botones
++    // (antes era una línea propia bajo ellos): cabe de sobra entre la
++    // etiqueta y los botones, así que la fila de idioma ocupa una sola línea.
++    // La pista es visible por diseño: el log de la #30 prueba que los
++    // botones solos nunca se encontraron (12 clics R2, todos bajo la
++    // cabecera). Sin glifo △: la fuente del menú puede no llevar U+25B3,
++    // así que la palabra "Triángulo" se escribe entera (nada de tofu).
++    ImGui::SameLine(0, ImGui::GetStyle().ItemSpacing.x);
++    ImGui::TextColored(kPalGold, "%s",
++                       Achievements::Tr("Triangle: change language", "Triángulo: cambiar idioma").c_str());
 +    ImGui::SameLine();
 +    const float btnW = 64.0f;
 +    const float gap = ImGui::GetStyle().ItemSpacing.x;
@@ -4305,14 +4398,19 @@ index 00000000..03b67048
 +        ImGui::PushStyleColor(ImGuiCol_ButtonActive,
 +                              active ? ImVec4(0.85f, 0.68f, 0.20f, 1.0f) : ImVec4(0.20f, 0.23f, 0.28f, 1.0f));
 +        ImGui::PushStyleColor(ImGuiCol_Text, active ? kPillGoldFg : kPalMuted);
-+        if (ImGui::Button(buttons[i].label, ImVec2(btnW, 30))) {
++        if (ImGui::Button(buttons[i].label, ImVec2(btnW, 36))) {
 +            if (lang != buttons[i].value) {
 +                CVarSetInteger("gAchievements.Language", buttons[i].value);
 +                SaveAchievementsCvars();
++                // TEMP DIAG (run #31): proves the button language switch on console.
++                SPDLOG_INFO("[PS4] [diag] menu language -> {} (button)", buttons[i].value == 1 ? "ES" : "EN");
++                spdlog::default_logger()->flush();
 +            }
 +        }
 +        ImGui::PopStyleColor(4);
 +    }
++    // (La pista "Triángulo: cambiar idioma" vive ahora en la fila de arriba,
++    // junto a los botones — ver DrawLanguageButtons.)
 +}
 +
 +static void DrawRewardsHeader(WidgetInfo&) {
@@ -4328,7 +4426,9 @@ index 00000000..03b67048
 +
 +    DrawLanguageButtons();
 +
-+    // Title + unseen dot.
++    // Title + unseen dot, on one line with the subtitle (compactación
++    // run #31): el punto dorado queda en el hueco de 24 px entre el título
++    // y el subtítulo, así que nunca se solapa con el texto.
 +    ImGui::TextColored(kPalGold, "%s", Achievements::Tr("ACHIEVEMENTS", "LOGROS").c_str());
 +    if (Achievements::HasUnseen()) {
 +        const ImVec2 rmin = ImGui::GetItemRectMin();
@@ -4336,17 +4436,22 @@ index 00000000..03b67048
 +        ImGui::GetWindowDrawList()->AddCircleFilled(
 +            ImVec2(rmax.x + 12, (rmin.y + rmax.y) * 0.5f), 5.0f, ImGui::GetColorU32(kPalGold));
 +    }
++    ImGui::SameLine(0, 24.0f);
 +    ImGui::TextColored(kPalMuted, "%s",
 +                       Achievements::Tr(spdlog::fmt_lib::format("{} achievements in total · Vanilla + Randomizer",
 +                                                                total),
 +                                        spdlog::fmt_lib::format("{} logros en total · Vainilla + Randomizer", total))
 +                           .c_str());
 +
-+    // Filling Triforce (ImDrawList triangles; gated by the Triforce switch).
++    // Stats row (compactación run #31): Triforce + conteos + puntos en UNA
++    // línea, y luego la barra de progreso. Antes eran 4 filas (Triforce,
++    // conteo, barra, puntos); ahora 1 fila + barra. El lado de la Triforce
++    // baja de 22 a 18 (la fila mide 31 px en vez de 38).
++    const int pct = total > 0 ? (count * 100 / total) : 0;
 +    if (Achievements::RewardEnabled("Triforce")) {
 +        ImDrawList* dl = ImGui::GetWindowDrawList();
 +        const ImVec2 origin = ImGui::GetCursorScreenPos();
-+        const float side = 22.0f;
++        const float side = 18.0f;
 +        DrawTriforce(dl, origin, side, pieces);
 +        ImGui::Dummy(ImVec2(side * 2.0f, side * 2.0f * 0.866f));
 +        ImGui::SameLine();
@@ -4354,34 +4459,38 @@ index 00000000..03b67048
 +                           Achievements::Tr(spdlog::fmt_lib::format("TRIFORCE COMPLETE · {}/3", pieces),
 +                                            spdlog::fmt_lib::format("TRIFORCE COMPLETO · {}/3", pieces))
 +                               .c_str());
++        ImGui::SameLine();
 +    }
-+
-+    // Progress (count) + points.
-+    const int pct = total > 0 ? (count * 100 / total) : 0;
 +    ImGui::TextColored(kPalCream, "%s",
 +                       spdlog::fmt_lib::format("{}/{} · {}%", count, total, pct).c_str());
++    ImGui::SameLine();
++    if (points >= maxPoints) {
++        ImGui::TextColored(kPalGreen, "%s",
++                           Achievements::Tr(spdlog::fmt_lib::format("{}/{} pts · Maximum reached!", points, maxPoints),
++                                            spdlog::fmt_lib::format("{}/{} pts · ¡Máximo alcanzado!", points, maxPoints))
++                               .c_str());
++    } else {
++        ImGui::TextColored(kPalMuted, "%s",
++                           Achievements::Tr(spdlog::fmt_lib::format("{}/{} pts · {} pts to the maximum", points,
++                                                                    maxPoints, maxPoints - points),
++                                            spdlog::fmt_lib::format("{}/{} pts · Faltan {} pts para el máximo", points,
++                                                                    maxPoints, maxPoints - points))
++                               .c_str());
++    }
 +    ImGui::PushStyleColor(ImGuiCol_PlotHistogram, kPalGold);
 +    ImGui::PushStyleColor(ImGuiCol_FrameBg, kPalLine);
 +    ImGui::ProgressBar(total > 0 ? static_cast<float>(count) / total : 0.0f, ImVec2(-1, 14), "");
 +    ImGui::PopStyleColor(2);
-+    ImGui::TextColored(kPalCream, "%s",
-+                       spdlog::fmt_lib::format("{}/{} pts", points, maxPoints).c_str());
-+    ImGui::SameLine();
-+    if (points >= maxPoints) {
-+        ImGui::TextColored(kPalGreen, "%s", Achievements::Tr("Maximum reached!", "¡Máximo alcanzado!").c_str());
-+    } else {
-+        ImGui::TextColored(kPalMuted, "%s",
-+                           Achievements::Tr(spdlog::fmt_lib::format("{} pts to the maximum", maxPoints - points),
-+                                            spdlog::fmt_lib::format("Faltan {} pts para el máximo", maxPoints - points))
-+                               .c_str());
-+    }
 +
 +    // Rank card.
 +    ImGui::PushStyleColor(ImGuiCol_ChildBg, kPalPanel);
 +    ImGui::PushStyleColor(ImGuiCol_Border, kPalGold);
 +    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
 +    ImGui::BeginChild("##rankcard", ImVec2(0, 0), ImGuiChildFlags_Border | ImGuiChildFlags_AutoResizeY);
-+    ImGui::TextColored(kPalMuted, "%s", Achievements::Tr("CURRENT RANK", "RANGO ACTUAL").c_str());
++    // Rank card, 2 lines (compactación run #31): rango + (siguiente rango
++    // + slot). Antes: 4 líneas (etiqueta, rango, siguiente, slot).
++    ImGui::TextColored(kPalMuted, "%s", Achievements::Tr("CURRENT RANK:", "RANGO ACTUAL:").c_str());
++    ImGui::SameLine();
 +    if (Achievements::RewardEnabled("Title")) {
 +        ImGui::TextColored(rank.color, "%s", title);
 +    } else {
@@ -4389,20 +4498,19 @@ index 00000000..03b67048
 +    }
 +    if (nextTitle != nullptr) {
 +        ImGui::TextColored(kPalMuted, "%s",
-+                           Achievements::Tr(spdlog::fmt_lib::format("Next rank: {} — {} more achievements", nextTitle,
-+                                                                    needed),
-+                                            spdlog::fmt_lib::format("Siguiente rango: {} — faltan {} logros",
-+                                                                    nextTitle, needed))
++                           Achievements::Tr(spdlog::fmt_lib::format("Next rank: {} — {} more achievements · Slot: {} · division {}/25",
++                                                                    nextTitle, needed, rank.name, rank.division),
++                                            spdlog::fmt_lib::format("Siguiente rango: {} — faltan {} logros · Slot: {} · división {}/25",
++                                                                    nextTitle, needed, rank.name, rank.division))
 +                               .c_str());
 +    } else {
 +        ImGui::TextColored(kPalGreen, "%s",
-+                           Achievements::Tr("Highest rank reached!", "¡Rango máximo alcanzado!").c_str());
++                           Achievements::Tr(spdlog::fmt_lib::format("Highest rank reached! · Slot: {} · division {}/25",
++                                                                    rank.name, rank.division),
++                                            spdlog::fmt_lib::format("¡Rango máximo alcanzado! · Slot: {} · división {}/25",
++                                                                    rank.name, rank.division))
++                               .c_str());
 +    }
-+    ImGui::TextColored(kPalMuted, "%s",
-+                       Achievements::Tr(spdlog::fmt_lib::format("Slot: {} · division {}/25", rank.name,
-+                                                                rank.division),
-+                                        spdlog::fmt_lib::format("Slot: {} · división {}/25", rank.name, rank.division))
-+                           .c_str());
 +    ImGui::EndChild();
 +    ImGui::PopStyleVar();
 +    ImGui::PopStyleColor(2);
@@ -4435,7 +4543,9 @@ index 00000000..03b67048
 +        const float availW = ImGui::GetContentRegionAvail().x;
 +        const float gap = 4.0f;
 +        const float boxW = (availW - 7 * gap) / 8.0f;
-+        const float boxH = 34.0f;
++        // Run #31 (compactación): cajas de 22 px en vez de 34 (el número cabe
++        // de sobra: la fuente es de 13 px).
++        const float boxH = 22.0f;
 +        ImDrawList* dl = ImGui::GetWindowDrawList();
 +        const ImVec2 p0 = ImGui::GetCursorScreenPos();
 +        const Milestone* nextMs = nullptr;
@@ -4536,9 +4646,15 @@ index 00000000..03b67048
 +    const float availW = ImGui::GetContentRegionAvail().x;
 +    const float spacingX = ImGui::GetStyle().ItemSpacing.x;
 +    const float spacingY = ImGui::GetStyle().ItemSpacing.y;
-+    const int cols = (availW >= 520.0f) ? 4 : 2;
++    // Run #31 (compactación): 8 tarjetas en UNA fila en ventanas anchas (la
++    // sección de PS4 mide ~1360 px: cada tarjeta queda en ~165 px y el
++    // título más largo sigue cabiendo en 1–2 líneas sobre el interruptor).
++    // Ventanas estrechas vuelven a 4 o 2 columnas como antes. cardH 116 →
++    // 84: título (1–2 líneas) + interruptor (26) + padding caben (el
++    // interruptor va en cardH - pad - 26).
++    const int cols = (availW >= 1100.0f) ? 8 : (availW >= 520.0f) ? 4 : 2;
 +    const float cardW = (availW - (cols - 1) * spacingX) / cols;
-+    const float cardH = 116.0f;
++    const float cardH = 84.0f;
 +    const float pad = ImGui::GetStyle().WindowPadding.y;
 +
 +    for (int i = 0; i < 8; i++) {
@@ -4559,6 +4675,10 @@ index 00000000..03b67048
 +        if (DrawSwitchButton("##switch", on)) {
 +            CVarSetInteger((std::string("gAchievements.Reward.") + card.suffix).c_str(), on ? 0 : 1);
 +            SaveAchievementsCvars();
++            // TEMP DIAG (run #31): proves the reward switch actually toggled on console
++            // (run #30: repeated clicks on the same spot with no visible response and no proof).
++            SPDLOG_INFO("[PS4] [diag] reward toggle {} -> {}", card.suffix, on ? "OFF" : "ON");
++            spdlog::default_logger()->flush();
 +        }
 +        ImGui::SameLine();
 +        ImGui::TextColored(on ? kPalGold : kPalMuted, "%s", on ? "ON" : "OFF");
@@ -4749,51 +4869,76 @@ index 00000000..03b67048
 +    // Opening the list marks the new unlocks as seen (clears the badge).
 +    Achievements::MarkSeen();
 +
-+    ImGui::Text("%s",
-+                Achievements::Tr(
-+                    spdlog::fmt_lib::format("Achievements: {}/{}  ·  Points: {}/{}",
-+                                            Achievements::CategoryUnlockedCount(Achievements::Category::Vanilla),
-+                                            Achievements::CategoryTotalCount(Achievements::Category::Vanilla),
-+                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Vanilla),
-+                                            Achievements::CategoryPoints(Achievements::Category::Vanilla)),
-+                    spdlog::fmt_lib::format("Logros: {}/{}  ·  Puntos: {}/{}",
-+                                            Achievements::CategoryUnlockedCount(Achievements::Category::Vanilla),
-+                                            Achievements::CategoryTotalCount(Achievements::Category::Vanilla),
-+                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Vanilla),
-+                                            Achievements::CategoryPoints(Achievements::Category::Vanilla)))
-+                    .c_str());
-+    ImGui::Separator();
-+    for (const Achievements::Def& def : Achievements::GetDefs()) {
-+        if (def.category != Achievements::Category::Vanilla) {
-+            continue;
++    // Run #31 (compactación): el conteo va DENTRO del separador "Logros"
++    // (antes: línea de conteo + separador, 2 elementos). El separador
++    // WIDGET_SEPARATOR_TEXT "Logros" de AddMenuAchievements se quitó; esta
++    // línea en vivo lo reemplaza y el conteo sigue siempre visible.
++    ImGui::SeparatorText(Achievements::Tr(
++        spdlog::fmt_lib::format("Achievements: {}/{}  ·  Points: {}/{}",
++                                Achievements::CategoryUnlockedCount(Achievements::Category::Vanilla),
++                                Achievements::CategoryTotalCount(Achievements::Category::Vanilla),
++                                Achievements::CategoryUnlockedPoints(Achievements::Category::Vanilla),
++                                Achievements::CategoryPoints(Achievements::Category::Vanilla)),
++        spdlog::fmt_lib::format("Logros: {}/{}  ·  Puntos: {}/{}",
++                                Achievements::CategoryUnlockedCount(Achievements::Category::Vanilla),
++                                Achievements::CategoryTotalCount(Achievements::Category::Vanilla),
++                                Achievements::CategoryUnlockedPoints(Achievements::Category::Vanilla),
++                                Achievements::CategoryPoints(Achievements::Category::Vanilla)))
++                             .c_str());
++    // Run #31: ONLY the rows scroll. They live in their own child
++    // (##achlist) sized to the section's remaining visible height, so the
++    // header, the reward grid, L3+R3 and the reset stay fixed above it
++    // and the section window itself never scrolls (its content fits).
++    // Height from code, not invented: GetContentRegionAvail().y is the
++    // visible height left in the section window below the cursor — the
++    // section window is capped at columnHeight by Menu::DrawElement's
++    // size constraints, so this is exactly the space the list may take.
++    // (Run #30 log: the list started at ~770 px of an 11234 px section
++    // and the stick never moved it past 308 — the whole section scrolled
++    // as one window and the cards ate the input.)
++    const float listH = ImGui::GetContentRegionAvail().y;
++    if (ImGui::BeginChild("##achlist", ImVec2(0, listH))) {
++        for (const Achievements::Def& def : Achievements::GetDefs()) {
++            if (def.category != Achievements::Category::Vanilla) {
++                continue;
++            }
++            DrawAchievementRow(def);
 +        }
-+        DrawAchievementRow(def);
 +    }
++    ImGui::EndChild();
 +}
 +
 +static void DrawRandomizerList(WidgetInfo&) {
 +    Achievements::MarkSeen();
 +
-+    ImGui::Text("%s",
-+                Achievements::Tr(
-+                    spdlog::fmt_lib::format("Achievements: {}/{}  ·  Points: {}/{}",
-+                                            Achievements::CategoryUnlockedCount(Achievements::Category::Randomizer),
-+                                            Achievements::CategoryTotalCount(Achievements::Category::Randomizer),
-+                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Randomizer),
-+                                            Achievements::CategoryPoints(Achievements::Category::Randomizer)),
-+                    spdlog::fmt_lib::format("Logros: {}/{}  ·  Puntos: {}/{}",
-+                                            Achievements::CategoryUnlockedCount(Achievements::Category::Randomizer),
-+                                            Achievements::CategoryTotalCount(Achievements::Category::Randomizer),
-+                                            Achievements::CategoryUnlockedPoints(Achievements::Category::Randomizer),
-+                                            Achievements::CategoryPoints(Achievements::Category::Randomizer)))
-+                    .c_str());
-+    ImGui::Separator();
-+    for (const Achievements::Def& def : Achievements::GetDefs()) {
-+        if (def.category != Achievements::Category::Randomizer) {
-+            continue;
++    // Run #31 (compactación): igual que en vainilla — el conteo va dentro
++    // del separador (antes: línea de conteo + separador).
++    ImGui::SeparatorText(Achievements::Tr(
++        spdlog::fmt_lib::format("Randomizer achievements: {}/{}  ·  Points: {}/{}",
++                                Achievements::CategoryUnlockedCount(Achievements::Category::Randomizer),
++                                Achievements::CategoryTotalCount(Achievements::Category::Randomizer),
++                                Achievements::CategoryUnlockedPoints(Achievements::Category::Randomizer),
++                                Achievements::CategoryPoints(Achievements::Category::Randomizer)),
++        spdlog::fmt_lib::format("Logros del Randomizer: {}/{}  ·  Puntos: {}/{}",
++                                Achievements::CategoryUnlockedCount(Achievements::Category::Randomizer),
++                                Achievements::CategoryTotalCount(Achievements::Category::Randomizer),
++                                Achievements::CategoryUnlockedPoints(Achievements::Category::Randomizer),
++                                Achievements::CategoryPoints(Achievements::Category::Randomizer)))
++                             .c_str());
++    // Run #31: same as DrawVanillaList — only the rows scroll, inside
++    // their own ##achlist child sized to the section's remaining visible
++    // height. (The Randomizer sidebar has no header/grid of its own, so
++    // the child takes almost the whole section here.)
++    const float listH = ImGui::GetContentRegionAvail().y;
++    if (ImGui::BeginChild("##achlist", ImVec2(0, listH))) {
++        for (const Achievements::Def& def : Achievements::GetDefs()) {
++            if (def.category != Achievements::Category::Randomizer) {
++                continue;
++            }
++            DrawAchievementRow(def);
 +        }
-+        DrawAchievementRow(def);
 +    }
++    ImGui::EndChild();
 +}
 +
 +// "Reiniciar logros" (run #26, Lux): destructive, so two steps. First
@@ -4811,6 +4956,9 @@ index 00000000..03b67048
 +                                        "Borra todos los desbloqueos, revelados y el contador de sobornos.")
 +                           .c_str());
 +    if (!gResetConfirmArmed) {
++        // Run #31 (compactación): el botón va en la misma línea que la
++        // descripción (antes era una línea propia).
++        ImGui::SameLine();
 +        if (ImGui::Button(Achievements::Tr("Reset achievements", "Reiniciar logros").c_str())) {
 +            gResetConfirmArmed = true;
 +        }
@@ -4846,9 +4994,11 @@ index 00000000..03b67048
 +    AddWidget(path, "Rewards header", WIDGET_CUSTOM).CustomFunction(DrawRewardsHeader);
 +    AddWidget(path, Achievements::Tr("Rewards", "Recompensas"), WIDGET_SEPARATOR_TEXT);
 +    AddWidget(path, "Rewards grid", WIDGET_CUSTOM).CustomFunction(DrawRewardsGrid);
++    // Run #31 (compactación): etiqueta a la izquierda del combo en UNA línea
++    // (antes: etiqueta arriba + combo abajo, 2 líneas).
 +    AddWidget(path, Achievements::Tr("L3+R3 action", "Acción de L3+R3"), WIDGET_CVAR_COMBOBOX)
 +        .CVar("gAchievements.L3R3Mode")
-+        .Options(ComboboxOptions().ComboMap(l3r3Modes).DefaultIndex(1));
++        .Options(ComboboxOptions().ComboMap(l3r3Modes).DefaultIndex(1).LabelPosition(LabelPositions::Near).ComponentAlignment(ComponentAlignments::Right));
 +
 +    // "Reiniciar logros" (run #26, Lux): destructive reset of ALL
 +    // achievements, with confirmation. Custom widget: the button text is
@@ -4858,7 +5008,6 @@ index 00000000..03b67048
 +    AddWidget(path, Achievements::Tr("Reset achievements", "Reiniciar logros"), WIDGET_CUSTOM)
 +        .CustomFunction(DrawResetAchievements);
 +
-+    AddWidget(path, Achievements::Tr("Achievements", "Logros"), WIDGET_SEPARATOR_TEXT);
 +    AddWidget(path, Achievements::Tr("Vanilla achievements", "Logros vainilla"), WIDGET_CUSTOM)
 +        .CustomFunction(DrawVanillaList);
 +
@@ -4892,7 +5041,6 @@ index 00000000..03b67048
 +    { "L3+R3 action", "Acción de L3+R3" },
 +    { "Rewards", "Recompensas" },
 +    { "Reset achievements", "Reiniciar logros" },
-+    { "Achievements", "Logros" },
 +    { "Vanilla achievements", "Logros vainilla" },
 +    { "Randomizer achievements", "Logros del Randomizer" },
 +};
